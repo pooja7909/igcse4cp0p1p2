@@ -975,57 +975,91 @@ function getGeminiClient(): GoogleGenAI | null {
 
 // Resilient Gemini generator with exponential backoff and model cascade
 // Prevents 503 (high demand) and 429 (rate limits) from breaking features
+function isTransientGeminiError(err: any): boolean {
+  const msg = String(err?.message || "");
+  return (
+    err?.status === 503 ||
+    err?.code === 503 ||
+    err?.status === 429 ||
+    err?.code === 429 ||
+    err?.status === 500 ||
+    msg.includes("503") ||
+    msg.includes("429") ||
+    msg.includes("high demand") ||
+    msg.includes("overloaded") ||
+    msg.includes("UNAVAILABLE") ||
+    msg.includes("RESOURCE_EXHAUSTED") ||
+    msg.includes("INTERNAL") ||
+    /fetch failed|ECONNRESET|ETIMEDOUT|socket hang up/i.test(msg)
+  );
+}
+
+/** Reads Gemini's "retry in 12s" hint from a 429 error, if present. */
+function geminiRetryHintMs(err: any): number {
+  const msg = String(err?.message || "");
+  const m = msg.match(/retryDelay"?\s*:\s*"(\d+(?:\.\d+)?)s"/) || msg.match(/retry in (\d+(?:\.\d+)?)\s*s/i);
+  return m ? Math.ceil(parseFloat(m[1]) * 1000) : 0;
+}
+
+// Resilient Gemini call. "High demand" (503) and rate-limit (429) spikes often last
+// a minute or more, so we keep retrying with growing pauses and rotate through the
+// fallback models until maxWaitMs runs out. Other errors (bad key, bad request) fail fast.
 async function generateContentWithResilience(
   ai: GoogleGenAI,
   options: {
     contents: any;
     config?: any;
     candidateModels?: string[];
+    maxWaitMs?: number;
   }
 ) {
-  // Allowed models from gemini-api skill:
-  // Primary: 'gemini-3.8-flash' -> Fallback 1: 'gemini-flash-latest' -> Fallback 2: 'gemini-3.1-flash-lite'
   const candidateModels = options.candidateModels || [
     "gemini-3.8-flash",
     "gemini-flash-latest",
     "gemini-3.1-flash-lite",
   ];
+  const deadline = Date.now() + (options.maxWaitMs ?? 60_000);
+  const pauses = [0, 2_000, 5_000, 10_000, 20_000, 30_000, 30_000];
 
   let lastError: any = null;
 
-  for (const model of candidateModels) {
-    for (let attempt = 0; attempt < 2; attempt++) {
+  for (let round = 0; round < pauses.length; round++) {
+    if (round > 0) {
+      const hinted = geminiRetryHintMs(lastError);
+      const jitter = Math.floor(Math.random() * 1000);
+      const wait = Math.min(Math.max(pauses[round], hinted) + jitter, deadline - Date.now());
+      if (wait <= 0) break;
+      console.warn(`[gemini] Busy, retrying in ${Math.round(wait / 1000)}s (round ${round + 1})`);
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+
+    let sawTransient = false;
+    for (const model of candidateModels) {
+      if (Date.now() >= deadline) break;
       try {
-        const response = await ai.models.generateContent({
+        return await ai.models.generateContent({
           model,
           contents: options.contents,
           config: options.config,
         });
-        return response;
       } catch (err: any) {
         lastError = err;
-        const msg = err?.message || "";
-        const isTransient =
-          err?.status === 503 ||
-          err?.code === 503 ||
-          msg.includes("503") ||
-          msg.includes("high demand") ||
-          msg.includes("UNAVAILABLE") ||
-          err?.status === 429 ||
-          err?.code === 429;
-
-        if (isTransient && attempt === 0) {
-          // Delay briefly before a retry on the same model
-          await new Promise((resolve) => setTimeout(resolve, 600));
-          continue;
+        if (isTransientGeminiError(err)) {
+          sawTransient = true;
+          continue; // try the next model straight away
         }
-        // If second attempt failed or non-retriable, cascade to next fallback model
-        break;
+        // A bad/blocked API key won't be fixed by another model or by waiting
+        const authProblem =
+          err?.status === 401 || err?.code === 401 || err?.status === 403 || err?.code === 403 ||
+          /API key not valid|API_KEY_INVALID|PERMISSION_DENIED|UNAUTHENTICATED/i.test(String(err?.message || ""));
+        if (authProblem) throw err;
+        // Otherwise (e.g. model not available on this key) just try the next model
       }
     }
+    if (!sawTransient) break; // nothing temporary left to wait out
   }
 
-  throw lastError;
+  throw lastError || new Error("Gemini request failed");
 }
 
 // Topic catalog for IGCSE Computer Science
@@ -1712,21 +1746,41 @@ function inlineDocParts(doc: any, label: string, fallbackMime = "application/pdf
   return [{ inlineData: { mimeType, data } }, { text: `[Attached: ${label}]` }];
 }
 
-async function generateJsonWithRetry(ai: GoogleGenAI, parts: any[], label: string): Promise<any> {
+async function generateJsonWithRetry(ai: GoogleGenAI, parts: any[], label: string, maxWaitMs = 120_000): Promise<any> {
   let lastErr: any = null;
+  const deadline = Date.now() + maxWaitMs;
   for (let attempt = 0; attempt < 2; attempt++) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 5_000) break;
     try {
       const response = await generateContentWithResilience(ai, {
         contents: { parts },
         config: { responseMimeType: "application/json", maxOutputTokens: 32768, temperature: 0.1 },
+        maxWaitMs: remaining,
       });
       return parseModelJson(response.text || "");
     } catch (e: any) {
       lastErr = e;
       console.warn(`[convert-paper] ${label} attempt ${attempt + 1} failed:`, e?.message || e);
+      // Busy/rate-limited errors were already retried for the whole time budget
+      if (isTransientGeminiError(e)) break;
     }
   }
-  throw new Error(`${label}: ${lastErr?.message || "AI request failed"}`);
+  throw new Error(`${label}: ${friendlyGeminiError(lastErr)}`);
+}
+
+function friendlyGeminiError(err: any): string {
+  const msg = String(err?.message || err || "AI request failed");
+  if (/429|RESOURCE_EXHAUSTED|quota/i.test(msg)) {
+    return "Gemini's usage limit for your API key was reached. Wait a minute and try again (or enable billing in Google AI Studio for higher limits).";
+  }
+  if (/503|high demand|UNAVAILABLE|overloaded/i.test(msg)) {
+    return "Google's Gemini service is very busy right now. Please wait a few minutes and try again.";
+  }
+  if (/API key not valid|API_KEY_INVALID|PERMISSION_DENIED|403/i.test(msg)) {
+    return "Gemini rejected the API key. Check GEMINI_API_KEY in Vercel → Settings → Environment Variables.";
+  }
+  return msg;
 }
 
 const PAPER_ITEM_RULES = `ITEM TYPES - choose the one that lets the answer be marked automatically in a web app:
@@ -1762,6 +1816,10 @@ async function extractPaperPerQuestion(
         opts.starterFiles.map((sf: any) => `### ${sf.name}\n\`\`\`python\n${sf.code}\n\`\`\``).join("\n\n")
       : "";
 
+  // Whole conversion must finish inside Vercel's 300s limit (keep a safety margin).
+  const budgetEnd = Date.now() + 270_000;
+  const budgetLeft = (cap: number) => Math.max(10_000, Math.min(cap, budgetEnd - Date.now()));
+
   // ---- Step 1: outline ----
   const outline = await generateJsonWithRetry(
     ai,
@@ -1778,7 +1836,8 @@ Return JSON only:
   "totalMarks": number, "questions": [ { "number": "1", "marks": number, "topic": "short topic" } ] }`,
       },
     ],
-    "Paper outline"
+    "Paper outline",
+    budgetLeft(120_000)
   );
 
   const outlineQs: any[] = Array.isArray(outline.questions) ? outline.questions.filter((q: any) => q && q.number) : [];
@@ -1794,6 +1853,10 @@ Return JSON only:
     while (next < outlineQs.length) {
       const i = next++;
       const oq = outlineQs[i];
+      if (budgetEnd - Date.now() < 15_000) {
+        failures.push(`Question ${oq.number}: ran out of time because Gemini was busy - please upload the paper again later.`);
+        continue;
+      }
       try {
         results[i] = await generateJsonWithRetry(
           ai,
@@ -1816,7 +1879,8 @@ Return JSON only:
 { "questionNumber": "${oq.number}", "unit": "U..", "topic": "...", "items": [ ... ] }`,
             },
           ],
-          `Question ${oq.number}`
+          `Question ${oq.number}`,
+          budgetLeft(150_000)
         );
       } catch (e: any) {
         failures.push(String(e?.message || e));
@@ -1979,7 +2043,7 @@ app.post("/api/convert-paper", requireTeacher, async (req, res) => {
       } catch (err: any) {
         console.error("Gemini convert-paper error:", err);
         res.status(502).json({
-          error: "The AI could not convert this paper: " + (err?.message || String(err)) + " Please try again.",
+          error: "The AI could not convert this paper. " + (err?.message || String(err)),
         });
       }
       return;
