@@ -9,38 +9,40 @@ export type { TeacherProfile };
 const TEACHER_TOKEN_KEY = "edexcel_teacher_token";
 const TEACHER_PROFILE_KEY = "edexcel_teacher_profile";
 
+// Teacher logins are kept only until the browser (or tab) is closed, never "remembered"
+// on the computer. On shared classroom computers a student opening the app later must
+// never land in a teacher's dashboard.
+try {
+  // One-time cleanup of logins remembered by older versions of the app
+  localStorage.removeItem(TEACHER_TOKEN_KEY);
+  localStorage.removeItem(TEACHER_PROFILE_KEY);
+} catch (e) {}
+
 export function getTeacherToken(): string | null {
   try {
-    return sessionStorage.getItem(TEACHER_TOKEN_KEY) || localStorage.getItem(TEACHER_TOKEN_KEY);
+    return sessionStorage.getItem(TEACHER_TOKEN_KEY);
   } catch (e) {
     return null;
   }
 }
 
-export function setTeacherToken(token: string, persist = true): void {
+export function setTeacherToken(token: string, _persist = false): void {
   try {
     sessionStorage.setItem(TEACHER_TOKEN_KEY, token);
-    if (persist) {
-      localStorage.setItem(TEACHER_TOKEN_KEY, token);
-    }
   } catch (e) {}
 }
 
 export function getStoredTeacherProfile(): TeacherProfile | null {
   try {
-    const raw = sessionStorage.getItem(TEACHER_PROFILE_KEY) || localStorage.getItem(TEACHER_PROFILE_KEY);
+    const raw = sessionStorage.getItem(TEACHER_PROFILE_KEY);
     if (raw) return JSON.parse(raw);
   } catch (e) {}
   return null;
 }
 
-export function setStoredTeacherProfile(profile: TeacherProfile, persist = true): void {
+export function setStoredTeacherProfile(profile: TeacherProfile, _persist = false): void {
   try {
-    const raw = JSON.stringify(profile);
-    sessionStorage.setItem(TEACHER_PROFILE_KEY, raw);
-    if (persist) {
-      localStorage.setItem(TEACHER_PROFILE_KEY, raw);
-    }
+    sessionStorage.setItem(TEACHER_PROFILE_KEY, JSON.stringify(profile));
   } catch (e) {}
 }
 
