@@ -28,6 +28,7 @@ import {
   Terminal,
   X,
   Copy,
+  Loader2,
 } from "lucide-react";
 import { prepareDocForUpload } from "../../utils/uploadHelper";
 import { DataFilesManager } from "./DataFilesManager";
@@ -103,6 +104,7 @@ export const QuestionUploader: React.FC<QuestionUploaderProps> = ({
   const [viewingStarterFile, setViewingStarterFile] = useState<PythonStarterFile | null>(null);
 
   const [isProcessing, setIsProcessing] = useState(false);
+  const [progressMsg, setProgressMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
@@ -330,40 +332,113 @@ export const QuestionUploader: React.FC<QuestionUploaderProps> = ({
     setExtractedPaper(null);
 
     try {
-      // Large PDFs are uploaded in pieces first (Vercel limits requests to 4.5 MB)
-      const preparedQuestionDoc = await prepareDocForUpload(questionDoc);
-      const preparedMarkSchemeDoc = await prepareDocForUpload(markSchemeDoc);
+      const pyStarters = starterFiles
+        .filter((sf) => isPythonFileName(sf.name))
+        .map((sf) => ({ name: sf.name, code: sf.code, size: sf.size, lineCount: sf.lineCount }));
+      // .py files are starter code; .txt/.csv etc. are data files programs open
+      const paperDataFiles = starterFiles
+        .filter((sf) => !isPythonFileName(sf.name))
+        .map((sf) => ({ name: sf.name, content: sf.code }));
 
-      const res = await teacherFetch("/api/convert-paper", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          questionDoc: preparedQuestionDoc,
-          markSchemeDoc: preparedMarkSchemeDoc,
-          // .py files are starter code; .txt/.csv etc. are data files programs open
-          starterFiles: starterFiles
-            .filter((sf) => isPythonFileName(sf.name))
-            .map((sf) => ({
-              name: sf.name,
-              code: sf.code,
-              size: sf.size,
-              lineCount: sf.lineCount,
-            })),
-          dataFiles: starterFiles
-            .filter((sf) => !isPythonFileName(sf.name))
-            .map((sf) => ({ name: sf.name, content: sf.code })),
+      // Sends a request and turns any failure (incl. Vercel's 504 page) into a readable error
+      const postJson = async (url: string, body: any) => {
+        const r = await teacherFetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const d = await r.json().catch(() => null);
+        if (!r.ok || !d) {
+          if (r.status === 401) throw new Error("Your teacher session has expired. Please sign in again.");
+          if (r.status === 504)
+            throw new Error("The server timed out waiting for Gemini (it is probably busy). Please try again.");
+          throw new Error((d && d.error) || `Server request failed (${r.status})`);
+        }
+        return d;
+      };
+
+      let paper: ExtractedPaper;
+      if (!questionDoc) {
+        // Only starter files / mark scheme: original single-request conversion
+        setProgressMsg("Converting…");
+        const data = await postJson("/api/convert-paper", {
+          questionDoc: undefined,
+          markSchemeDoc: await prepareDocForUpload(markSchemeDoc),
+          starterFiles: pyStarters,
+          dataFiles: paperDataFiles,
           paperMetadata,
           preferredUnit: preferredUnit || undefined,
-        }),
-      });
+        });
+        paper = data.paper;
+      } else {
+        // Whole paper, in short steps so no request runs into Vercel's 5-minute limit:
+        // upload once -> list questions -> each question separately -> put together
+        setProgressMsg("Uploading the paper…");
+        const preparedQuestionDoc = await prepareDocForUpload(questionDoc, undefined, { forceChunks: true });
+        const preparedMarkSchemeDoc = await prepareDocForUpload(markSchemeDoc, undefined, { forceChunks: true });
+        const common = {
+          questionDoc: preparedQuestionDoc,
+          markSchemeDoc: preparedMarkSchemeDoc,
+          starterFiles: pyStarters,
+          dataFiles: paperDataFiles,
+          paperMetadata,
+          preferredUnit: preferredUnit || undefined,
+        };
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: `Server request failed (${res.status})` }));
-        throw new Error(err.error || "Failed to process past paper");
+        setProgressMsg("Reading the paper and listing its questions…");
+        const outlineData = await postJson("/api/convert-paper/outline", common);
+        const questions: any[] = outlineData.questions || [];
+        const results: any[] = new Array(questions.length).fill(null);
+        const failures: string[] = [];
+        let done = 0;
+        const showProgress = () =>
+          setProgressMsg(
+            `Extracting questions with their mark schemes… ${done} of ${questions.length} done (about 1–3 minutes)`
+          );
+        showProgress();
+
+        let next = 0;
+        const worker = async () => {
+          while (next < questions.length) {
+            const i = next++;
+            let lastErr = "";
+            for (let attempt = 0; attempt < 2; attempt++) {
+              try {
+                const d = await postJson("/api/convert-paper/question", {
+                  ...common,
+                  outline: outlineData.outline,
+                  question: questions[i],
+                });
+                results[i] = d.result;
+                lastErr = "";
+                break;
+              } catch (err: any) {
+                lastErr = err?.message || String(err);
+                if (/session has expired/i.test(lastErr)) throw err;
+              }
+            }
+            if (lastErr) failures.push(`Question ${questions[i].number}: ${lastErr}`);
+            done++;
+            showProgress();
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(3, questions.length) }, worker));
+
+        setProgressMsg("Putting the paper together…");
+        const strip = (d: any) => (d && d.uploadId ? { uploadId: d.uploadId, totalChunks: d.totalChunks } : undefined);
+        const assembled = await postJson("/api/convert-paper/assemble", {
+          outline: outlineData.outline,
+          questions,
+          results,
+          failures,
+          dataFiles: paperDataFiles,
+          paperMetadata,
+          preferredUnit: preferredUnit || undefined,
+          questionDoc: strip(preparedQuestionDoc),
+          markSchemeDoc: strip(preparedMarkSchemeDoc),
+        });
+        paper = assembled.paper;
       }
-
-      const data = await res.json();
-      const paper: ExtractedPaper = data.paper;
 
       // Ensure starterFileName is connected if any matching starter file exists
       if (starterFiles.length > 0 && Array.isArray(paper.questions)) {
@@ -415,6 +490,7 @@ export const QuestionUploader: React.FC<QuestionUploaderProps> = ({
       setErrorMsg(err.message || "Failed to process past paper.");
     } finally {
       setIsProcessing(false);
+      setProgressMsg(null);
     }
   };
 
@@ -1307,6 +1383,12 @@ export const QuestionUploader: React.FC<QuestionUploaderProps> = ({
                   : "Extract All Questions & Mark Scheme"}
               </button>
             </div>
+            {isProcessing && progressMsg && (
+              <div className="flex items-center gap-2 p-3 rounded-xl bg-purple-50 border border-purple-200 text-xs font-semibold text-purple-900">
+                <Loader2 className="w-4 h-4 animate-spin text-purple-600 shrink-0" />
+                <span>{progressMsg} Please keep this page open.</span>
+              </div>
+            )}
           </form>
         )}
 
