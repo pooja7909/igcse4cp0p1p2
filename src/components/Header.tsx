@@ -302,6 +302,8 @@ export const Header: React.FC<HeaderProps> = ({
                 <span>In-Class Assessment</span>
               </button>
 
+              {/* Teachers only: shown after logging in, or when the teacher address (?teacher) is opened */}
+              {(isTeacherAuthenticated || currentView === "teacher") && (
               <button
                 id="header-tab-teacher"
                 onClick={() => onViewChange("teacher")}
@@ -324,6 +326,7 @@ export const Header: React.FC<HeaderProps> = ({
                   </span>
                 )}
               </button>
+              )}
             </nav>
 
             {/* Lock Teacher Portal Button: Only shown when teacher is logged in */}
