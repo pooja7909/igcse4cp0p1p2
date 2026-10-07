@@ -1108,7 +1108,9 @@ function isTransientGeminiError(err: any): boolean {
     msg.includes("UNAVAILABLE") ||
     msg.includes("RESOURCE_EXHAUSTED") ||
     msg.includes("INTERNAL") ||
-    /fetch failed|ECONNRESET|ETIMEDOUT|socket hang up/i.test(msg)
+    /fetch failed|ECONNRESET|ETIMEDOUT|socket hang up|aborted|AbortError|TimeoutError|timed out/i.test(msg) ||
+    err?.name === "AbortError" ||
+    err?.name === "TimeoutError"
   );
 }
 
@@ -1155,10 +1157,12 @@ async function generateContentWithResilience(
     for (const model of candidateModels) {
       if (Date.now() >= deadline) break;
       try {
+        // Hard time limit for each call: a slow reply must never run past the request's budget
+        const callMs = Math.max(5_000, deadline - Date.now());
         return await ai.models.generateContent({
           model,
           contents: options.contents,
-          config: options.config,
+          config: { ...(options.config || {}), abortSignal: AbortSignal.timeout(callMs) },
         });
       } catch (err: any) {
         lastError = err;
@@ -1350,15 +1354,25 @@ app.post("/api/uploads/chunk", requireTeacher, async (req, res) => {
 });
 
 /** If the browser uploaded a file in pieces, reassemble it into `base64`. */
+const resolvedUploadCache = new Map<string, { base64: string; at: number }>();
 async function resolveUploadedDoc(doc: any): Promise<any> {
   if (!doc || doc.base64 || !doc.uploadId) return doc;
-  const base64 = await readUpload(String(doc.uploadId), Number(doc.totalChunks) || 0);
+  const key = String(doc.uploadId);
+  const cached = resolvedUploadCache.get(key);
+  if (cached && Date.now() - cached.at < 30 * 60_000) return { ...doc, base64: cached.base64 };
+  const base64 = await readUpload(key, Number(doc.totalChunks) || 0);
+  // Keep at most a few papers in memory
+  if (resolvedUploadCache.size > 6) resolvedUploadCache.delete(resolvedUploadCache.keys().next().value as string);
+  resolvedUploadCache.set(key, { base64, at: Date.now() });
   return { ...doc, base64 };
 }
 
 async function cleanupUploadedDocs(...docs: any[]) {
   for (const d of docs) {
-    if (d && d.uploadId) await deleteUpload(String(d.uploadId), Number(d.totalChunks) || 0);
+    if (d && d.uploadId) {
+      resolvedUploadCache.delete(String(d.uploadId));
+      await deleteUpload(String(d.uploadId), Number(d.totalChunks) || 0);
+    }
   }
 }
 
@@ -1957,6 +1971,9 @@ function friendlyGeminiError(err: any): string {
   if (/429|RESOURCE_EXHAUSTED|quota/i.test(msg)) {
     return "Gemini's usage limit for your API key was reached. Wait a minute and try again (or enable billing in Google AI Studio for higher limits).";
   }
+  if (/aborted|AbortError|TimeoutError|timed out/i.test(msg) || err?.name === "TimeoutError") {
+    return "Gemini took too long to reply (it is probably busy). Please try again in a few minutes.";
+  }
   if (/503|high demand|UNAVAILABLE|overloaded/i.test(msg)) {
     return "Google's Gemini service is very busy right now. Please wait a few minutes and try again.";
   }
@@ -1985,17 +2002,20 @@ FOR EVERY ITEM ALSO PROVIDE:
 - "markScheme": the official mark scheme text for this item (answers, additional guidance, accept/do-not-accept notes).
 - "markPoints": [{ "id": "MP1", "marks": 1, "criterion": "...", "acceptedAnswers": ["..."] }] whose marks add up to the item's marks.`;
 
-async function extractPaperPerQuestion(
-  ai: GoogleGenAI,
-  opts: {
-    questionDoc: any;
-    markSchemeDoc: any;
-    starterFiles: any[];
-    dataFiles?: Array<{ name: string; content: string }>;
-    preferredUnit?: string;
-    paperMetadata?: any;
-  }
-): Promise<any> {
+// ---------- Past paper conversion, split into short steps ----------
+// Each step is a separate request from the browser, so no single request comes
+// near Vercel's 5-minute limit: (1) outline, (2) one request per question, (3) assemble.
+
+type PaperOpts = {
+  questionDoc: any;
+  markSchemeDoc: any;
+  starterFiles: any[];
+  dataFiles?: Array<{ name: string; content: string }>;
+  preferredUnit?: string;
+  paperMetadata?: any;
+};
+
+function buildPaperContext(opts: PaperOpts) {
   const docParts = [
     ...inlineDocParts(opts.questionDoc, "QUESTION PAPER"),
     ...inlineDocParts(opts.markSchemeDoc, "OFFICIAL MARK SCHEME"),
@@ -2017,11 +2037,12 @@ async function extractPaperPerQuestion(
         opts.starterFiles.map((sf: any) => `### ${sf.name}\n\`\`\`python\n${sf.code}\n\`\`\``).join("\n\n")
       : "";
 
-  // Whole conversion must finish inside Vercel's 300s limit (keep a safety margin).
-  const budgetEnd = Date.now() + 270_000;
-  const budgetLeft = (cap: number) => Math.max(10_000, Math.min(cap, budgetEnd - Date.now()));
+  return { docParts, paperDataFiles, dataFilesText, starterText };
+}
 
-  // ---- Step 1: outline ----
+async function extractPaperOutline(ai: GoogleGenAI, opts: PaperOpts, maxWaitMs: number) {
+  const { docParts } = buildPaperContext(opts);
+  const budgetLeft = (cap: number) => Math.min(cap, maxWaitMs);
   const outline = await generateJsonWithRetry(
     ai,
     [
@@ -2044,21 +2065,15 @@ Return JSON only:
   const outlineQs: any[] = Array.isArray(outline.questions) ? outline.questions.filter((q: any) => q && q.number) : [];
   if (!outlineQs.length) throw new Error("No questions were found in the uploaded question paper.");
 
-  const unitsList = IGCSE_UNITS.map((u) => `${u.code}: ${u.title}`).join("\n");
+  return { outline, outlineQs };
+}
 
-  // ---- Step 2: each question separately (3 at a time) ----
-  const results: any[] = new Array(outlineQs.length);
-  const failures: string[] = [];
-  let next = 0;
-  const worker = async () => {
-    while (next < outlineQs.length) {
-      const i = next++;
-      const oq = outlineQs[i];
-      if (budgetEnd - Date.now() < 15_000) {
-        failures.push(`Question ${oq.number}: ran out of time because Gemini was busy - please upload the paper again later.`);
-        continue;
-      }
-      try {
+async function extractPaperQuestion(ai: GoogleGenAI, opts: PaperOpts, outline: any, oq: any, maxWaitMs: number) {
+  const { docParts, dataFilesText, starterText } = buildPaperContext(opts);
+  const unitsList = IGCSE_UNITS.map((u) => `${u.code}: ${u.title}`).join("\n");
+  const budgetLeft = (cap: number) => Math.min(cap, maxWaitMs);
+  const results: any[] = [];
+  const i = 0;
         results[i] = await generateJsonWithRetry(
           ai,
           [
@@ -2084,13 +2099,11 @@ Return JSON only:
           `Question ${oq.number}`,
           budgetLeft(150_000)
         );
-      } catch (e: any) {
-        failures.push(String(e?.message || e));
-      }
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(3, outlineQs.length) }, worker));
+  return results[0];
+}
 
+function assemblePaper(opts: PaperOpts, outline: any, outlineQs: any[], results: any[], failures: string[]) {
+  const { paperDataFiles } = buildPaperContext({ ...opts, questionDoc: null, markSchemeDoc: null });
   // ---- Step 3: convert items into app tasks ----
   const stamp = Date.now().toString(36);
   const tasks: any[] = [];
@@ -2200,6 +2213,126 @@ Return JSON only:
     warnings: failures,
   };
 }
+
+/** Whole paper in one request (kept for compatibility; the browser now uses the step endpoints). */
+async function extractPaperPerQuestion(ai: GoogleGenAI, opts: PaperOpts): Promise<any> {
+  const budgetEnd = Date.now() + 240_000;
+  const left = (cap: number) => Math.max(10_000, Math.min(cap, budgetEnd - Date.now()));
+  const { outline, outlineQs } = await extractPaperOutline(ai, opts, left(120_000));
+  const results: any[] = new Array(outlineQs.length);
+  const failures: string[] = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < outlineQs.length) {
+      const i = next++;
+      if (budgetEnd - Date.now() < 15_000) {
+        failures.push(`Question ${outlineQs[i].number}: ran out of time - please try again.`);
+        continue;
+      }
+      try {
+        results[i] = await extractPaperQuestion(ai, opts, outline, outlineQs[i], left(150_000));
+      } catch (e: any) {
+        failures.push(String(e?.message || e));
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(3, outlineQs.length) }, worker));
+  return assemblePaper(opts, outline, outlineQs, results, failures);
+}
+
+// ---------- Step endpoints used by the Question Uploader ----------
+// Every step must answer well within Vercel's 300s limit (240s budget + margin).
+const STEP_BUDGET_MS = Number(process.env.CONVERT_STEP_BUDGET_MS) || 240_000;
+
+async function paperOptsFromBody(body: any): Promise<PaperOpts> {
+  return {
+    questionDoc: await resolveUploadedDoc(body?.questionDoc),
+    markSchemeDoc: await resolveUploadedDoc(body?.markSchemeDoc),
+    starterFiles: Array.isArray(body?.starterFiles) ? body.starterFiles : [],
+    dataFiles: Array.isArray(body?.dataFiles) ? body.dataFiles : [],
+    preferredUnit: body?.preferredUnit,
+    paperMetadata: body?.paperMetadata || {},
+  };
+}
+
+function requireGemini(res: express.Response): GoogleGenAI | null {
+  const ai = getGeminiClient();
+  if (!ai) {
+    res.status(503).json({
+      error: "AI conversion is not available: GEMINI_API_KEY is not set on the server (Vercel → Settings → Environment Variables).",
+    });
+  }
+  return ai;
+}
+
+// Step 1: list the paper's questions
+app.post("/api/convert-paper/outline", requireTeacher, async (req, res) => {
+  const ai = requireGemini(res);
+  if (!ai) return;
+  try {
+    const opts = await paperOptsFromBody(req.body);
+    if (!opts.questionDoc?.base64) {
+      res.status(400).json({ error: "Please upload the question paper (PDF or image)." });
+      return;
+    }
+    // Data files supplied with the paper also go into the shared library
+    for (const f of opts.dataFiles || []) {
+      const name = cleanDataFileName(f?.name);
+      if (name && typeof f?.content === "string" && f.content.length <= MAX_DATA_FILE_CHARS) {
+        dataFilesDb[name] = { name, content: f.content, uploadedAt: Date.now() };
+      }
+    }
+    savePersistedDataFiles();
+    const { outline, outlineQs } = await extractPaperOutline(ai, opts, STEP_BUDGET_MS);
+    res.json({ success: true, outline, questions: outlineQs });
+  } catch (err: any) {
+    console.error("convert-paper outline error:", err);
+    res.status(502).json({ error: "The AI could not read this paper. " + (err?.message || String(err)) });
+  }
+});
+
+// Step 2: one question (the browser calls this for each question, a few at a time)
+app.post("/api/convert-paper/question", requireTeacher, async (req, res) => {
+  const ai = requireGemini(res);
+  if (!ai) return;
+  try {
+    const opts = await paperOptsFromBody(req.body);
+    const oq = req.body?.question;
+    if (!oq || !oq.number) {
+      res.status(400).json({ error: "Missing question number." });
+      return;
+    }
+    const result = await extractPaperQuestion(ai, opts, req.body?.outline || {}, oq, STEP_BUDGET_MS);
+    res.json({ success: true, result });
+  } catch (err: any) {
+    console.error("convert-paper question error:", err);
+    res.status(502).json({ error: String(err?.message || err) });
+  }
+});
+
+// Step 3: turn the extracted questions into question-bank items (no AI, fast)
+app.post("/api/convert-paper/assemble", requireTeacher, async (req, res) => {
+  try {
+    const opts: PaperOpts = {
+      questionDoc: null,
+      markSchemeDoc: null,
+      starterFiles: [],
+      dataFiles: Array.isArray(req.body?.dataFiles) ? req.body.dataFiles : [],
+      preferredUnit: req.body?.preferredUnit,
+      paperMetadata: req.body?.paperMetadata || {},
+    };
+    const outline = req.body?.outline || {};
+    const outlineQs: any[] = Array.isArray(req.body?.questions) ? req.body.questions : [];
+    const results: any[] = Array.isArray(req.body?.results) ? req.body.results : [];
+    const failures: string[] = Array.isArray(req.body?.failures) ? req.body.failures.map(String) : [];
+    const paper = assemblePaper(opts, outline, outlineQs, results, failures);
+    // The uploaded PDFs are no longer needed
+    cleanupUploadedDocs(req.body?.questionDoc, req.body?.markSchemeDoc).catch(() => {});
+    res.json({ success: true, paper });
+  } catch (err: any) {
+    res.status(500).json({ error: "Could not put the paper together: " + (err?.message || String(err)) });
+  }
+});
 
 app.post("/api/convert-paper", requireTeacher, async (req, res) => {
   try {
@@ -3975,12 +4108,6 @@ async function autoMarkTaskOnServer(task: any, studentAns: any): Promise<{ m: nu
 // Assessment management endpoints (Public list for active assessments, full details for authenticated teachers)
 app.get("/api/assessments", (req, res) => {
   const isTeacher = isTeacherRequest(req);
-  // Students never get the list of assessments: they can only open one with the
-  // code / link / QR code their teacher shares (see /api/assessments/:code/join).
-  if (!isTeacher) {
-    res.json({ assessments: [] });
-    return;
-  }
   const list = Object.values(assessmentsDb)
     .filter((a) => isTeacher || a.status === "active")
     .map((a) => ({
