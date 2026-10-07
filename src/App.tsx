@@ -343,13 +343,8 @@ export function App() {
       }
     };
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Secret teacher shortcut: Ctrl+Shift+T or Alt+T
-      if ((e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "t") || (e.altKey && e.key.toLowerCase() === "t")) {
-        e.preventDefault();
-        setCurrentView("teacher");
-      }
-    };
+    // (The old Ctrl+Shift+T / Alt+T teacher shortcut was removed: teachers use the ?teacher address.)
+    const handleKeyDown = (_e: KeyboardEvent) => {};
 
     parseUrlRoute();
     window.addEventListener("keydown", handleKeyDown);
@@ -718,16 +713,6 @@ export function App() {
             <span className="font-mono text-[11px] text-slate-400">
               Official 4CP0 Specification Alignment & 9–1 Grading
             </span>
-            {!dedicatedStudentMode && (
-              <button
-                type="button"
-                onClick={() => setCurrentView("teacher")}
-                className="text-[10px] text-slate-300 hover:text-slate-500 transition-colors cursor-pointer select-none"
-                title="Staff Access (Protected with teacher passcode)"
-              >
-                Staff Access
-              </button>
-            )}
           </div>
         </div>
       </footer>
