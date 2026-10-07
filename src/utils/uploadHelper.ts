@@ -33,10 +33,13 @@ function newUploadId(): string {
 
 export async function prepareDocForUpload(
   doc: UploadableDoc | null | undefined,
-  onProgress?: (fraction: number) => void
+  onProgress?: (fraction: number) => void,
+  options: { forceChunks?: boolean } = {}
 ): Promise<PreparedDoc | undefined> {
   if (!doc || !doc.base64) return undefined;
-  if (doc.base64.length <= INLINE_LIMIT) {
+  // forceChunks: upload once and refer to it by id (used when the same file is needed
+  // by several requests, e.g. converting a paper question by question)
+  if (!options.forceChunks && doc.base64.length <= INLINE_LIMIT) {
     return { base64: doc.base64, name: doc.name, mimeType: doc.mimeType };
   }
 
