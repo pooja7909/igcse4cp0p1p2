@@ -137,7 +137,7 @@ export const getEdexcelGrade = (
 
   const getMarks = (thresholdPct: number) => {
     if (!maxMarks || maxMarks <= 0) return undefined;
-    return Math.ceil((thresholdPct / 100) * maxMarks);
+    return Math.ceil((thresholdPct / 100) * maxMarks - 1e-3);
   };
 
   if (pct >= b[9]) {
@@ -315,7 +315,7 @@ export const formatBoundaryRange = (
 
   if (grade === "9") {
     if (maxMarks && maxMarks > 0) {
-      const minM = Math.ceil((min / 100) * maxMarks);
+      const minM = Math.ceil((min / 100) * maxMarks - 1e-3);
       return `${min}%+ (${minM}/${maxMarks} marks)`;
     }
     return `${min}%+`;
@@ -324,7 +324,7 @@ export const formatBoundaryRange = (
   if (grade === "U") {
     const g1 = b[1];
     if (maxMarks && maxMarks > 0) {
-      const maxM = Math.max(0, Math.ceil((g1 / 100) * maxMarks) - 1);
+      const maxM = Math.max(0, Math.ceil((g1 / 100) * maxMarks - 1e-3) - 1);
       return `<${g1}% (0–${maxM} marks)`;
     }
     return `<${g1}%`;
@@ -334,8 +334,8 @@ export const formatBoundaryRange = (
   const max = b[nextHigherGrade] - 1;
 
   if (maxMarks && maxMarks > 0) {
-    const minM = Math.ceil((min / 100) * maxMarks);
-    const maxM = Math.max(minM, Math.ceil((b[nextHigherGrade] / 100) * maxMarks) - 1);
+    const minM = Math.ceil((min / 100) * maxMarks - 1e-3);
+    const maxM = Math.max(minM, Math.ceil((b[nextHigherGrade] / 100) * maxMarks - 1e-3) - 1);
     return `${min}%–${max}% (${minM}–${maxM} marks)`;
   }
 
