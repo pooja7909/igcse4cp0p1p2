@@ -2289,6 +2289,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
             maxMarks: totalSelectedMarks || 20,
             gradeBoundaries: boundaries,
           }}
+          localOnly
           onClose={() => setShowBoundariesModal(false)}
           onSaved={(newBoundaries) => {
             setBoundaries(newBoundaries);
