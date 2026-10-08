@@ -131,8 +131,17 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
     maxMarks: number;
     verdict: "correct" | "partial" | "incorrect";
     feedback?: string;
-    checksLeft: number;
+    checksLeft: number | null; // null = unlimited
     answerChecked: string;
+    tests?: Array<{
+      inputs: string[];
+      output: string;
+      expected?: string;
+      passed: boolean;
+      marks: number;
+      maxMarks: number;
+      error?: string;
+    }>;
   };
   const [checkResults, setCheckResults] = useState<Record<string, CheckResult>>({});
   const [checkError, setCheckError] = useState<Record<string, string>>({});
@@ -454,7 +463,9 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
           const r = checkResults[currentTask.id];
           const err = checkError[currentTask.id];
           const changed = r && r.answerChecked !== JSON.stringify(answers[currentTask.id] ?? "");
-          const left = r ? r.checksLeft : Math.max(0, 3 - (((studentSession as any).answerChecks || {})[currentTask.id] || 0));
+          const limit = liveAssessment.maxChecks ?? 3; // 0 = unlimited
+          const usedBefore = (((studentSession as any).answerChecks || {})[currentTask.id] || 0) as number;
+          const left: number | null = limit === 0 ? null : r ? r.checksLeft : Math.max(0, limit - usedBefore);
           const hasAnswer = (() => {
             const v = answers[currentTask.id];
             if (v === undefined || v === null) return false;
@@ -474,12 +485,21 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="text-xs text-slate-600">
                   Your teacher lets you check this answer before moving on.{" "}
-                  <span className="font-semibold">{left} check{left === 1 ? "" : "s"} left</span> for this question.
+                  {left === null ? (
+                    <span className="font-semibold">Unlimited checks.</span>
+                  ) : (
+                    <>
+                      <span className="font-semibold">
+                        {left} check{left === 1 ? "" : "s"} left
+                      </span>{" "}
+                      for this question.
+                    </>
+                  )}
                 </div>
                 <button
                   type="button"
                   onClick={handleCheckAnswer}
-                  disabled={checkingId === currentTask.id || left <= 0 || !hasAnswer}
+                  disabled={checkingId === currentTask.id || (left !== null && left <= 0) || !hasAnswer}
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 transition-colors"
                 >
                   {checkingId === currentTask.id ? "Checking…" : "Check answer"}
@@ -495,6 +515,51 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
                       : `✗ Not correct yet: 0/${r.maxMarks} marks`}
                   </div>
                   {r.feedback && <div className="text-xs mt-1 whitespace-pre-line">{r.feedback}</div>}
+                  {Array.isArray(r.tests) && r.tests.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      <div className="text-xs font-bold">Test by test (where you gained and lost marks):</div>
+                      {r.tests.map((t, i) => (
+                        <div
+                          key={i}
+                          className={`rounded-lg border bg-white p-2.5 text-xs text-slate-800 ${
+                            t.passed ? "border-emerald-200" : "border-rose-200"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 font-semibold">
+                            <span className={t.passed ? "text-emerald-700" : "text-rose-700"}>
+                              {t.passed ? "✓" : "✗"} Test {i + 1}
+                            </span>
+                            <span>
+                              {t.marks}/{t.maxMarks} mark{t.maxMarks === 1 ? "" : "s"}
+                            </span>
+                          </div>
+                          <div className="mt-1.5 grid grid-cols-1 md:grid-cols-3 gap-2">
+                            <div>
+                              <div className="text-[10px] uppercase tracking-wide text-slate-500">Inputs typed</div>
+                              <pre className="font-mono whitespace-pre-wrap bg-slate-50 rounded p-1.5">
+                                {t.inputs.length ? t.inputs.join("\n") : "(no input)"}
+                              </pre>
+                            </div>
+                            <div>
+                              <div className="text-[10px] uppercase tracking-wide text-slate-500">Your program printed</div>
+                              <pre className="font-mono whitespace-pre-wrap bg-slate-50 rounded p-1.5">
+                                {t.output.trim() || "(nothing)"}
+                              </pre>
+                            </div>
+                            {t.expected !== undefined && (
+                              <div>
+                                <div className="text-[10px] uppercase tracking-wide text-slate-500">Expected</div>
+                                <pre className="font-mono whitespace-pre-wrap bg-emerald-50 rounded p-1.5">
+                                  {t.expected.trim() || "(nothing)"}
+                                </pre>
+                              </div>
+                            )}
+                          </div>
+                          {t.error && <div className="mt-1.5 font-mono text-rose-700">Error: {t.error}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {changed && (
                     <div className="text-[11px] mt-1 opacity-80">You have changed your answer since this check.</div>
                   )}
