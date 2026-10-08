@@ -95,75 +95,38 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [isUpdatingPass, setIsUpdatingPass] = useState(false);
 
   const fetchAssessments = async () => {
-    // Start with all pre-bundled official papers and mock examinations
-    let list: Assessment[] = [...SEED_ASSESSMENTS];
+    // The server is the single source of truth. (Older versions merged a copy saved in
+    // this browser and re-created any assessment missing on the server, which made
+    // deleted assessments come back, as duplicates with new codes.)
+    let list: Assessment[] | null = null;
     try {
       const res = await teacherFetch("/api/assessments");
       if (res.ok) {
         const data = await res.json();
-        const serverList = data.assessments || [];
-        for (const item of serverList) {
-          const idx = list.findIndex((a) => a.id === item.id || a.code === item.code);
-          if (idx >= 0) {
-            list[idx] = { ...list[idx], ...item };
-          } else {
-            list.push(item);
-          }
-        }
+        list = Array.isArray(data.assessments) ? data.assessments : [];
       }
     } catch (e) {
       console.warn("Failed to load assessments from server:", e);
     }
 
-    // Fetch all assessments from Firestore so changes from other devices appear immediately
-    try {
-      const fsList = await fetchAllAssessmentsFromFirestore();
-      for (const item of fsList) {
-        const idx = list.findIndex((a) => a.id === item.id || a.code === item.code);
-        if (idx >= 0) {
-          list[idx] = { ...list[idx], ...item };
-        } else {
-          list.push(item);
-        }
+    if (list) {
+      try {
+        localStorage.setItem("edexcel_saved_assessments", JSON.stringify(list));
+      } catch (e) {}
+    } else {
+      // Server unreachable: show the last list this browser saw (nothing is sent back)
+      try {
+        const parsed = JSON.parse(localStorage.getItem("edexcel_saved_assessments") || "[]");
+        list = Array.isArray(parsed) && parsed.length ? parsed : [...SEED_ASSESSMENTS];
+      } catch (e) {
+        list = [...SEED_ASSESSMENTS];
       }
-    } catch (e) {
-      console.warn("Failed to load assessments from Firestore:", e);
     }
 
-    // Merge with any assessments saved locally (ensures full resilience on serverless/Vercel)
-    try {
-      const localSaved = localStorage.getItem("edexcel_saved_assessments");
-      if (localSaved) {
-        const parsed: Assessment[] = JSON.parse(localSaved);
-        if (Array.isArray(parsed)) {
-          for (const item of parsed) {
-            const idx = list.findIndex((a) => a.id === item.id || a.code === item.code);
-            if (idx >= 0) {
-              list[idx] = { ...item, ...list[idx] };
-            } else {
-              list.push(item);
-              // Background sync to server so students can join via PIN immediately
-              teacherFetch("/api/assessments", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(item),
-              }).catch(() => {});
-            }
-          }
-        }
-      }
-    } catch (e) {}
-
-    // Persist combined list to localStorage
-    try {
-      if (list.length > 0) {
-        localStorage.setItem("edexcel_saved_assessments", JSON.stringify(list));
-      }
-    } catch (e) {}
-
-    setAssessments(list);
-    if (list.length > 0 && !selectedAssessmentId) {
-      const firstVisible = viewScope === "all" ? list[0] : list.find(isMine);
+    const finalList = list || [];
+    setAssessments(finalList);
+    if (finalList.length > 0 && !selectedAssessmentId) {
+      const firstVisible = viewScope === "all" ? finalList[0] : finalList.find(isMine);
       if (firstVisible) setSelectedAssessmentId(firstVisible.id);
     }
   };
