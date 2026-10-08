@@ -123,6 +123,8 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
   });
   // Teacher setting: students may check each answer (marked by the server) before moving on
   const [instantFeedback, setInstantFeedback] = useState<boolean>(() => Boolean(editingAssessment?.instantFeedback));
+  // Class name recorded for every student who joins (students don't have to type it)
+  const [classGroup, setClassGroup] = useState<string>(() => editingAssessment?.classGroup || "");
   const [feedbackDetail, setFeedbackDetail] = useState<"result" | "tests" | "full">(
     () => editingAssessment?.feedbackDetail || "tests"
   );
@@ -170,6 +172,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
       );
       setInstantFeedback(Boolean(editingAssessment.instantFeedback));
       setFeedbackDetail(editingAssessment.feedbackDetail || "tests");
+      setClassGroup(editingAssessment.classGroup || "");
       setMaxChecks(editingAssessment.maxChecks ?? 3);
       setCustomHeaderBanner(editingAssessment.customHeaderBanner || "");
       setCustomSubtitle(editingAssessment.customSubtitle || "");
@@ -370,6 +373,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
             instantFeedback,
             feedbackDetail,
             maxChecks,
+            classGroup,
             questionIds: selectedTaskIds,
             questions: selectedQuestions,
             maxMarks: totalSelectedMarks,
@@ -417,6 +421,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
             instantFeedback,
             feedbackDetail,
             maxChecks,
+            classGroup,
             questionIds: selectedTaskIds,
             questions: selectedQuestions,
             maxMarks: totalSelectedMarks,
@@ -457,6 +462,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
         instantFeedback,
         feedbackDetail,
         maxChecks,
+        classGroup,
         questionIds: selectedTaskIds,
         questions: selectedTaskIds.map((id) => allTasks[id]).filter(Boolean),
         maxMarks: totalSelectedMarks,
@@ -786,6 +792,19 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
               }
               className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500"
             />
+            <label className="text-xs font-semibold text-slate-700 block pt-2">Class / group (optional):</label>
+            <input
+              type="text"
+              value={classGroup}
+              maxLength={60}
+              onChange={(e) => setClassGroup(e.target.value)}
+              placeholder="e.g. 10A or Year 11 - Ms Arora"
+              className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500"
+            />
+            <span className="text-[11px] text-slate-500 block">
+              Recorded for every student who joins, so students don't type it. Leave empty to let students type their
+              own class.
+            </span>
           </div>
 
           <div className="space-y-1.5">
