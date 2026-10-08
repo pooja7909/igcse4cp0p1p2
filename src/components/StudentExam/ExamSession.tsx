@@ -125,6 +125,46 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
 
   const currentTask = questionsList[currentIdx];
 
+  // "Check answer" (only when the teacher allowed it for this assessment)
+  type CheckResult = {
+    marks: number;
+    maxMarks: number;
+    verdict: "correct" | "partial" | "incorrect";
+    feedback?: string;
+    checksLeft: number;
+    answerChecked: string;
+  };
+  const [checkResults, setCheckResults] = useState<Record<string, CheckResult>>({});
+  const [checkError, setCheckError] = useState<Record<string, string>>({});
+  const [checkingId, setCheckingId] = useState<string | null>(null);
+
+  const handleCheckAnswer = async () => {
+    if (!currentTask) return;
+    const qid = currentTask.id;
+    setCheckingId(qid);
+    setCheckError((e) => ({ ...e, [qid]: "" }));
+    try {
+      const res = await fetch(`/api/assessments/${liveAssessment.id}/check`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ studentId: studentSession.studentId, questionId: qid, answer: answers[qid] }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data) {
+        setCheckError((e) => ({ ...e, [qid]: (data && data.error) || "Could not check your answer. Please try again." }));
+        if (data && data.checksLeft === 0) {
+          setCheckResults((r) => (r[qid] ? { ...r, [qid]: { ...r[qid], checksLeft: 0 } } : r));
+        }
+        return;
+      }
+      setCheckResults((r) => ({ ...r, [qid]: { ...data, answerChecked: JSON.stringify(answers[qid] ?? "") } }));
+    } catch {
+      setCheckError((e) => ({ ...e, [qid]: "Could not reach the server. Please try again." }));
+    } finally {
+      setCheckingId(null);
+    }
+  };
+
   // Live timer
   useEffect(() => {
     if (liveAssessment.durationMinutes <= 0) return;
@@ -398,6 +438,7 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
 
       {/* Main Question Card Area */}
       {currentTask ? (
+        <>
         <QuestionCard
           key={currentTask.id}
           task={currentTask}
@@ -409,6 +450,61 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
           allowCopyPaste={liveAssessment.allowCopyPaste}
           showOperatorToolbar={liveAssessment.showOperatorToolbar}
         />
+        {liveAssessment.instantFeedback && (() => {
+          const r = checkResults[currentTask.id];
+          const err = checkError[currentTask.id];
+          const changed = r && r.answerChecked !== JSON.stringify(answers[currentTask.id] ?? "");
+          const left = r ? r.checksLeft : Math.max(0, 3 - (((studentSession as any).answerChecks || {})[currentTask.id] || 0));
+          const hasAnswer = (() => {
+            const v = answers[currentTask.id];
+            if (v === undefined || v === null) return false;
+            if (typeof v === "string") return v.trim() !== "";
+            if (Array.isArray(v)) return v.some((x) => (Array.isArray(x) ? x.some((y) => String(y ?? "").trim()) : String(x ?? "").trim()));
+            if (typeof v === "object") return Object.values(v).some((x) => String(x ?? "").trim());
+            return true;
+          })();
+          const style =
+            r?.verdict === "correct"
+              ? "bg-emerald-50 border-emerald-300 text-emerald-900"
+              : r?.verdict === "partial"
+              ? "bg-amber-50 border-amber-300 text-amber-900"
+              : "bg-rose-50 border-rose-300 text-rose-900";
+          return (
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="text-xs text-slate-600">
+                  Your teacher lets you check this answer before moving on.{" "}
+                  <span className="font-semibold">{left} check{left === 1 ? "" : "s"} left</span> for this question.
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCheckAnswer}
+                  disabled={checkingId === currentTask.id || left <= 0 || !hasAnswer}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+                >
+                  {checkingId === currentTask.id ? "Checking…" : "Check answer"}
+                </button>
+              </div>
+              {r && (
+                <div className={`p-3 rounded-xl border text-sm ${style}`}>
+                  <div className="font-bold">
+                    {r.verdict === "correct"
+                      ? `✓ Correct: ${r.marks}/${r.maxMarks} marks`
+                      : r.verdict === "partial"
+                      ? `◐ Partly correct: ${r.marks}/${r.maxMarks} marks`
+                      : `✗ Not correct yet: 0/${r.maxMarks} marks`}
+                  </div>
+                  {r.feedback && <div className="text-xs mt-1 whitespace-pre-line">{r.feedback}</div>}
+                  {changed && (
+                    <div className="text-[11px] mt-1 opacity-80">You have changed your answer since this check.</div>
+                  )}
+                </div>
+              )}
+              {err && <div className="text-xs text-rose-700">{err}</div>}
+            </div>
+          );
+        })()}
+        </>
       ) : (
         <div className="p-8 text-center text-slate-500 bg-white rounded-xl border border-slate-200">
           No questions available.
