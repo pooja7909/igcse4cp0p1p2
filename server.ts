@@ -1131,6 +1131,8 @@ async function generateContentWithResilience(
     config?: any;
     candidateModels?: string[];
     maxWaitMs?: number;
+    /** Longest a single call may take before it is abandoned and the next model is tried */
+    perCallTimeoutMs?: number;
   }
 ) {
   const candidateModels = options.candidateModels || [
@@ -1157,13 +1159,26 @@ async function generateContentWithResilience(
     for (const model of candidateModels) {
       if (Date.now() >= deadline) break;
       try {
-        // Hard time limit for each call: a slow reply must never run past the request's budget
-        const callMs = Math.max(5_000, deadline - Date.now());
-        return await ai.models.generateContent({
-          model,
-          contents: options.contents,
-          config: { ...(options.config || {}), abortSignal: AbortSignal.timeout(callMs) },
-        });
+        // Hard time limit for each call: a stuck call is abandoned (and the next model
+        // tried) instead of using up the whole request's time
+        const callMs = Math.max(5_000, Math.min(deadline - Date.now(), options.perCallTimeoutMs ?? 120_000));
+        const call = (config: any) =>
+          ai.models.generateContent({
+            model,
+            contents: options.contents,
+            config: { ...config, abortSignal: AbortSignal.timeout(callMs) },
+          });
+        try {
+          return await call(options.config || {});
+        } catch (err: any) {
+          // A model that doesn't accept the thinking setting: same call without it
+          const msg = String(err?.message || "");
+          if (options.config?.thinkingConfig && (err?.status === 400 || err?.code === 400) && /think/i.test(msg)) {
+            const { thinkingConfig, ...rest } = options.config;
+            return await call(rest);
+          }
+          throw err;
+        }
       } catch (err: any) {
         lastError = err;
         if (isTransientGeminiError(err)) {
@@ -1943,7 +1958,13 @@ function inlineDocParts(doc: any, label: string, fallbackMime = "application/pdf
   return [{ inlineData: { mimeType, data } }, { text: `[Attached: ${label}]` }];
 }
 
-async function generateJsonWithRetry(ai: GoogleGenAI, parts: any[], label: string, maxWaitMs = 120_000): Promise<any> {
+async function generateJsonWithRetry(
+  ai: GoogleGenAI,
+  parts: any[],
+  label: string,
+  maxWaitMs = 120_000,
+  extra: { perCallTimeoutMs?: number; config?: any } = {}
+): Promise<any> {
   let lastErr: any = null;
   const deadline = Date.now() + maxWaitMs;
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -1952,8 +1973,9 @@ async function generateJsonWithRetry(ai: GoogleGenAI, parts: any[], label: strin
     try {
       const response = await generateContentWithResilience(ai, {
         contents: { parts },
-        config: { responseMimeType: "application/json", maxOutputTokens: 32768, temperature: 0.1 },
+        config: { responseMimeType: "application/json", maxOutputTokens: 32768, temperature: 0.1, ...(extra.config || {}) },
         maxWaitMs: remaining,
+        perCallTimeoutMs: extra.perCallTimeoutMs,
       });
       return parseModelJson(response.text || "");
     } catch (e: any) {
@@ -2041,7 +2063,8 @@ function buildPaperContext(opts: PaperOpts) {
 }
 
 async function extractPaperOutline(ai: GoogleGenAI, opts: PaperOpts, maxWaitMs: number) {
-  const { docParts } = buildPaperContext(opts);
+  // Listing the questions only needs the question paper (not the mark scheme)
+  const docParts = inlineDocParts(opts.questionDoc, "QUESTION PAPER");
   const budgetLeft = (cap: number) => Math.min(cap, maxWaitMs);
   const outline = await generateJsonWithRetry(
     ai,
@@ -2059,7 +2082,13 @@ Return JSON only:
       },
     ],
     "Paper outline",
-    budgetLeft(120_000)
+    maxWaitMs,
+    {
+      // A simple listing task: little thinking needed, small answer, and a stuck call is
+      // abandoned after ~75s so another model can be tried within the step's time
+      perCallTimeoutMs: Math.min(75_000, Math.round(maxWaitMs * 0.32)),
+      config: { maxOutputTokens: 4096, thinkingConfig: { thinkingLevel: "LOW" } },
+    }
   );
 
   const outlineQs: any[] = Array.isArray(outline.questions) ? outline.questions.filter((q: any) => q && q.number) : [];
@@ -2097,7 +2126,8 @@ Return JSON only:
             },
           ],
           `Question ${oq.number}`,
-          budgetLeft(150_000)
+          budgetLeft(maxWaitMs),
+          { perCallTimeoutMs: Math.min(150_000, Math.round(maxWaitMs * 0.62)) }
         );
   return results[0];
 }
