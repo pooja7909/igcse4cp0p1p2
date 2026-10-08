@@ -4204,6 +4204,7 @@ app.get("/api/assessments", (req, res) => {
       questions: isTeacher ? (a.questions || []) : undefined,
       questionCount: (a.questionIds || []).length,
       maxMarks: a.maxMarks,
+      gradeBoundaries: a.gradeBoundaries,
       createdAt: a.createdAt,
       status: a.status,
       // Assessments made before teacher accounts existed belong to the original account
