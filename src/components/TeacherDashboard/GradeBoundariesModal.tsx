@@ -32,6 +32,8 @@ interface GradeBoundariesModalProps {
   students?: StudentSession[];
   onClose: () => void;
   onSaved: (newBoundaries: GradeBoundaries) => void;
+  /** Builder: just hand the boundaries back; they're saved with the assessment */
+  localOnly?: boolean;
 }
 
 export const GradeBoundariesModal: React.FC<GradeBoundariesModalProps> = ({
@@ -39,6 +41,7 @@ export const GradeBoundariesModal: React.FC<GradeBoundariesModalProps> = ({
   students = [],
   onClose,
   onSaved,
+  localOnly,
 }) => {
   const maxMarks = assessment?.maxMarks || 20;
 
@@ -121,6 +124,20 @@ export const GradeBoundariesModal: React.FC<GradeBoundariesModalProps> = ({
     setErrorMsg(null);
   };
 
+  // What the teacher is typing in each box (so a box can be emptied or part-typed)
+  const [drafts, setDrafts] = useState<Partial<Record<keyof GradeBoundaries, string>>>({});
+  const typeIn = (grade: keyof GradeBoundaries, text: string, apply: (n: number) => void) => {
+    setDrafts((d) => ({ ...d, [grade]: text }));
+    const n = parseFloat(text);
+    if (text.trim() !== "" && !isNaN(n)) apply(n);
+  };
+  const doneTyping = (grade: keyof GradeBoundaries) =>
+    setDrafts((d) => {
+      const next = { ...d };
+      delete next[grade];
+      return next;
+    });
+
   const handlePercentageChange = (grade: keyof GradeBoundaries, value: number) => {
     const clamped = Math.max(0, Math.min(100, isNaN(value) ? 0 : value));
     setBoundaries((prev) => ({
@@ -132,7 +149,8 @@ export const GradeBoundariesModal: React.FC<GradeBoundariesModalProps> = ({
 
   const handleMarksChange = (grade: keyof GradeBoundaries, rawMarks: number) => {
     const clampedMarks = Math.max(0, Math.min(maxMarks, isNaN(rawMarks) ? 0 : rawMarks));
-    const calculatedPct = Math.round((clampedMarks / maxMarks) * 100);
+    // Keep the exact mark (e.g. 50/80 = 62.5%), not a rounded whole percentage
+    const calculatedPct = Math.round((clampedMarks / maxMarks) * 100 * 10000) / 10000;
     setBoundaries((prev) => ({
       ...prev,
       [grade]: calculatedPct,
@@ -149,6 +167,15 @@ export const GradeBoundariesModal: React.FC<GradeBoundariesModalProps> = ({
     const val = validateGradeBoundaries(boundaries);
     if (!val.valid) {
       setErrorMsg(val.error || "Please ensure grade boundaries are strictly decreasing from Grade 9 down to Grade 1.");
+      return;
+    }
+
+    // In the assessment builder (or an assessment not saved yet) there is nothing on the
+    // server to update: the boundaries are saved together with the assessment.
+    if (localOnly || !assessment?.id || String(assessment.id).startsWith("temp_")) {
+      onSaved(boundaries);
+      setSuccessMsg("Boundaries applied. They will be saved when you save the assessment.");
+      setTimeout(() => onClose(), 700);
       return;
     }
 
@@ -320,7 +347,10 @@ export const GradeBoundariesModal: React.FC<GradeBoundariesModalProps> = ({
               <div className="inline-flex rounded-xl p-1 bg-slate-200/80">
                 <button
                   type="button"
-                  onClick={() => setInputMode("percentage")}
+                  onClick={() => {
+                    setDrafts({});
+                    setInputMode("percentage");
+                  }}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
                     inputMode === "percentage"
                       ? "bg-white text-purple-800 shadow-xs"
@@ -332,7 +362,10 @@ export const GradeBoundariesModal: React.FC<GradeBoundariesModalProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setInputMode("marks")}
+                  onClick={() => {
+                    setDrafts({});
+                    setInputMode("marks");
+                  }}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
                     inputMode === "marks"
                       ? "bg-white text-purple-800 shadow-xs"
@@ -393,7 +426,7 @@ export const GradeBoundariesModal: React.FC<GradeBoundariesModalProps> = ({
               <tbody className="divide-y divide-slate-100">
                 {gradeTiers.map(({ grade, label, desc, color }) => {
                   const pctVal = boundaries[grade];
-                  const rawMarkVal = Math.ceil((pctVal / 100) * maxMarks);
+                  const rawMarkVal = Math.ceil((pctVal / 100) * maxMarks - 1e-3);
                   const candidateCount = cohortDistribution.counts[String(grade) as GradeTier] || 0;
                   const candidatePct =
                     cohortDistribution.totalGraded > 0
@@ -425,10 +458,10 @@ export const GradeBoundariesModal: React.FC<GradeBoundariesModalProps> = ({
                               type="number"
                               min={0}
                               max={100}
-                              value={pctVal}
-                              onChange={(e) =>
-                                handlePercentageChange(grade, parseInt(e.target.value, 10))
-                              }
+                              step="any"
+                              value={drafts[grade] ?? String(Math.round(pctVal * 100) / 100)}
+                              onChange={(e) => typeIn(grade, e.target.value, (n) => handlePercentageChange(grade, n))}
+                              onBlur={() => doneTyping(grade)}
                               className="w-16 px-2 py-1 border border-slate-300 rounded-lg text-center font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500"
                             />
                             <span className="font-bold text-slate-500">%</span>
@@ -439,10 +472,9 @@ export const GradeBoundariesModal: React.FC<GradeBoundariesModalProps> = ({
                               type="number"
                               min={0}
                               max={maxMarks}
-                              value={rawMarkVal}
-                              onChange={(e) =>
-                                handleMarksChange(grade, parseInt(e.target.value, 10))
-                              }
+                              value={drafts[grade] ?? String(rawMarkVal)}
+                              onChange={(e) => typeIn(grade, e.target.value, (n) => handleMarksChange(grade, Math.round(n)))}
+                              onBlur={() => doneTyping(grade)}
                               className="w-16 px-2 py-1 border border-slate-300 rounded-lg text-center font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500"
                             />
                             <span className="font-bold text-slate-500">marks</span>
@@ -489,7 +521,7 @@ export const GradeBoundariesModal: React.FC<GradeBoundariesModalProps> = ({
                     &lt; {boundaries[1]}%
                   </td>
                   <td className="py-2.5 px-3 text-center font-mono text-slate-500">
-                    &lt; {Math.ceil((boundaries[1] / 100) * maxMarks)} marks
+                    &lt; {Math.ceil((boundaries[1] / 100) * maxMarks - 1e-3)} marks
                   </td>
                   <td className="py-2.5 px-3 text-slate-600 font-mono text-[11px]">
                     {formatBoundaryRange("U", boundaries, maxMarks)}
