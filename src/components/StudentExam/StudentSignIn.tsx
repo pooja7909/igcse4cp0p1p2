@@ -46,13 +46,9 @@ export const StudentSignIn: React.FC<StudentSignInProps> = ({
     }
   });
   const [candidateNumber, setCandidateNumber] = useState("");
-  const [className, setClassName] = useState(() => {
-    try {
-      return localStorage.getItem("edexcel_student_class") || "11B";
-    } catch {
-      return "11B";
-    }
-  });
+  // No pre-filled class: on shared computers a remembered or default class (it used to be
+  // "11B") ended up recorded for every student. Teachers can set the class on the assessment.
+  const [className, setClassName] = useState("");
   const [showScanner, setShowScanner] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -135,12 +131,19 @@ export const StudentSignIn: React.FC<StudentSignInProps> = ({
           }
         } catch (e) {}
 
-        // Students only see the assessment their teacher shared (link / QR code / PIN),
-        // never a list of every assessment that teachers have set.
-        const sharedCode = (unpackedCode || initialCode || "").toUpperCase();
-        setAvailableAssessments(sharedCode ? list.filter((a) => a.code.toUpperCase() === sharedCode).slice(0, 1) : []);
+        // Sort by createdAt descending so latest edited/created is first
+        list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        setAvailableAssessments(list);
 
-        setPinCode(sharedCode);
+        if (unpackedCode) {
+          setPinCode(unpackedCode.toUpperCase());
+        } else if (initialCode) {
+          setPinCode(initialCode.toUpperCase());
+        } else if (list.length > 0) {
+          setPinCode(list[0].code);
+        } else {
+          setPinCode("IGCSE1");
+        }
         setLoadingAssessments(false);
       });
   }, [initialCode]);
@@ -165,7 +168,7 @@ export const StudentSignIn: React.FC<StudentSignInProps> = ({
 
     const formattedPin = pinCode.trim().toUpperCase();
     const trimmedName = candidateName.trim();
-    const trimmedClass = className.trim() || "Year 11";
+    const trimmedClass = (selectedAssessment?.classGroup || className).trim();
 
     try {
       localStorage.setItem("edexcel_student_name", trimmedName);
@@ -352,8 +355,11 @@ export const StudentSignIn: React.FC<StudentSignInProps> = ({
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-xs font-bold text-slate-700">
-                {isTask ? "Your task:" : "Your assessment:"}
+                Select Active Assessment:
               </label>
+              <span className="text-[11px] text-purple-600 font-semibold">
+                {availableAssessments.length} Available
+              </span>
             </div>
 
             {availableAssessments.length > 1 ? (
@@ -450,18 +456,27 @@ export const StudentSignIn: React.FC<StudentSignInProps> = ({
           />
         </div>
 
+        {selectedAssessment?.classGroup ? (
+        <div className="space-y-1.5">
+          <label className="text-xs font-semibold text-slate-700">Class / Group:</label>
+          <div className="w-full px-3.5 py-2.5 text-sm bg-slate-100 border border-slate-200 rounded-xl text-slate-700">
+            {selectedAssessment.classGroup} <span className="text-[11px] text-slate-500">(set by your teacher)</span>
+          </div>
+        </div>
+        ) : (
         <div className="space-y-1.5">
           <label className="text-xs font-semibold text-slate-700">Class / Group:</label>
           <input
             type="text"
             value={className}
             onChange={(e) => setClassName(e.target.value)}
-            placeholder="e.g. 11B (optional)"
+            placeholder="Your class, e.g. 10A (optional)"
             className={`w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 ${
               isTask ? "focus:ring-emerald-500" : "focus:ring-purple-500"
             }`}
           />
         </div>
+        )}
 
         {errorMsg && (
           <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex items-center gap-2">
