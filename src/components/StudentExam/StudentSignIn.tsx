@@ -131,22 +131,36 @@ export const StudentSignIn: React.FC<StudentSignInProps> = ({
           }
         } catch (e) {}
 
-        // Sort by createdAt descending so latest edited/created is first
-        list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-        setAvailableAssessments(list);
+        // Students only see the assessment their teacher shared (link / QR code / PIN),
+        // never a list of every assessment that teachers have set.
+        const sharedCode = (unpackedCode || initialCode || "").toUpperCase();
+        setAvailableAssessments(sharedCode ? list.filter((a) => a.code.toUpperCase() === sharedCode).slice(0, 1) : []);
 
-        if (unpackedCode) {
-          setPinCode(unpackedCode.toUpperCase());
-        } else if (initialCode) {
-          setPinCode(initialCode.toUpperCase());
-        } else if (list.length > 0) {
-          setPinCode(list[0].code);
-        } else {
-          setPinCode("IGCSE1");
-        }
+        setPinCode(sharedCode);
         setLoadingAssessments(false);
       });
   }, [initialCode]);
+
+  // Look up only the assessment whose PIN is in the box (from the link, or typed by the student)
+  useEffect(() => {
+    const code = pinCode.trim().toUpperCase();
+    if (code.length < 6) return;
+    if (availableAssessments.some((a) => a.code.toUpperCase() === code && (a as any)._fromServer)) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      fetch(`/api/assessments/${encodeURIComponent(code)}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (cancelled || !d || !d.assessment) return;
+          setAvailableAssessments([{ ...d.assessment, _fromServer: true } as any]);
+        })
+        .catch(() => {});
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [pinCode]);
 
   const selectedAssessment = availableAssessments.find(
     (a) => a.code.toUpperCase() === pinCode.trim().toUpperCase()
@@ -355,14 +369,11 @@ export const StudentSignIn: React.FC<StudentSignInProps> = ({
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-xs font-bold text-slate-700">
-                Select Active Assessment:
+                {isTask ? "Your task:" : "Your assessment:"}
               </label>
-              <span className="text-[11px] text-purple-600 font-semibold">
-                {availableAssessments.length} Available
-              </span>
             </div>
 
-            {availableAssessments.length > 1 ? (
+            {false ? (
               <select
                 value={pinCode}
                 onChange={(e) => setPinCode(e.target.value)}
