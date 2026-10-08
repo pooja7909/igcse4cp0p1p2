@@ -15,6 +15,7 @@ import {
   isPastPaperTask,
   getPastPaperInfo,
   groupPastPapersByYearAndSeries,
+  taskSearchText,
 } from "../../utils/pastPaperUtils";
 import {
   PlusCircle,
@@ -567,7 +568,8 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
           t.level.toLowerCase().includes(q) ||
           t.id.toLowerCase().includes(q) ||
           (t.starterFileName || "").toLowerCase().includes(q) ||
-          (t.paperTitle || "").toLowerCase().includes(q)
+          (t.paperTitle || "").toLowerCase().includes(q) ||
+          taskSearchText(t).includes(q)
         );
       }),
     }))
@@ -1771,7 +1773,8 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
                     t.title.toLowerCase().includes(q) ||
                     t.brief.toLowerCase().includes(q) ||
                     t.id.toLowerCase().includes(q) ||
-                    (t.starterFileName || "").toLowerCase().includes(q)
+                    (t.starterFileName || "").toLowerCase().includes(q) ||
+                    taskSearchText(t).includes(q)
                   );
                 });
                 if (groupTasks.length === 0) return null;

@@ -70,6 +70,36 @@ export function isPastPaperTask(task: IGCSETask): boolean {
 }
 
 /**
+ * The paper name of a question that came from an uploaded paper, e.g.
+ * "Pearson Edexcel June 2024 Paper 2" (stored as plain text in task.source).
+ */
+export function uploadedPaperName(task: IGCSETask): string {
+  const src = (task as any)?.source;
+  if (typeof src === "string") return src.trim();
+  // Older uploads stored the paper details as an object
+  if (src && typeof src === "object" && String(task.id || "").startsWith("q_paper_")) {
+    return [src.examBoard, src.session, src.year, src.paper].filter(Boolean).join(" ").trim();
+  }
+  return "";
+}
+
+/** Text used when a teacher searches for a question (includes the uploaded paper name). */
+export function taskSearchText(task: IGCSETask): string {
+  return [
+    task.title,
+    task.brief,
+    task.id,
+    task.level,
+    task.unitName,
+    task.starterFileName,
+    task.paperTitle,
+    uploadedPaperName(task),
+  ]
+    .map((x) => String(x || "").toLowerCase())
+    .join(" \n ");
+}
+
+/**
  * Returns canonical metadata for a past paper task.
  */
 export function getPastPaperInfo(task: IGCSETask): {
@@ -79,6 +109,31 @@ export function getPastPaperInfo(task: IGCSETask): {
   paperTitle: string;
   groupId: string;
 } {
+  // A paper the teacher uploaded gets its own folder named after the paper
+  // (it is not mixed into the built-in folders, and the year/series come from the upload)
+  const uploaded = uploadedPaperName(task);
+  if (uploaded && String(task.id || "").startsWith("q_paper_")) {
+    const low = uploaded.toLowerCase();
+    const y = low.match(/\b(20\d\d)\b/);
+    const year = task.year || (y ? parseInt(y[1], 10) : new Date().getFullYear());
+    const session = /nov|autumn/.test(low)
+      ? "November"
+      : /jan/.test(low)
+      ? "January"
+      : /specimen|sample|sams/.test(low)
+      ? "Specimen"
+      : /mock|practice/.test(low)
+      ? "Practice"
+      : "June";
+    return {
+      year,
+      session,
+      seriesLabel: `${session} ${year} (uploaded)`,
+      paperTitle: `${uploaded} (uploaded by you)`,
+      groupId: "uploaded_" + low.replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""),
+    };
+  }
+
   const text = `${task.paperTitle || ""} ${task.unitName || ""} ${task.title || ""} ${task.unit || ""} ${task.id || ""}`.toLowerCase();
 
   // June 2025 Series

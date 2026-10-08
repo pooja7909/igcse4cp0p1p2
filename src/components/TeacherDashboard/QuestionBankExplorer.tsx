@@ -8,6 +8,7 @@ import {
   isPastPaperTask,
   getPastPaperInfo,
   groupPastPapersByYearAndSeries,
+  taskSearchText,
 } from "../../utils/pastPaperUtils";
 import {
   Search,
@@ -222,7 +223,7 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
         const matchesFile = (t.starterFileName || "").toLowerCase().includes(q);
         const matchesUnit = (t.unitName || "").toLowerCase().includes(q);
         const matchesPaper = (t.paperTitle || "").toLowerCase().includes(q);
-        if (!matchesTitle && !matchesBrief && !matchesId && !matchesFile && !matchesUnit && !matchesPaper) return false;
+        if (!matchesTitle && !matchesBrief && !matchesId && !matchesFile && !matchesUnit && !matchesPaper && !taskSearchText(t).includes(q)) return false;
       }
       return true;
     });
