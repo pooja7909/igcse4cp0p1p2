@@ -172,6 +172,8 @@ export interface Assessment {
   id: string;
   title: string;
   instantFeedback?: boolean; // teacher setting: students may check each answer before moving on
+  feedbackDetail?: "result" | "tests" | "full"; // what a check shows for programming questions
+  maxChecks?: number; // checks allowed per question (0 = unlimited)
   ownerId?: string; // teacher who created it (older assessments: the original "t_primary" account)
   ownerName?: string;
   code: string; // 6-digit PIN for quick student join
