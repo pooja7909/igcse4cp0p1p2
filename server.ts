@@ -4175,6 +4175,12 @@ async function autoMarkTaskOnServer(
 // Assessment management endpoints (Public list for active assessments, full details for authenticated teachers)
 app.get("/api/assessments", (req, res) => {
   const isTeacher = isTeacherRequest(req);
+  // Students never get the list of assessments: they can only open one with the
+  // code / link / QR code their teacher shares (see /api/assessments/:code/join).
+  if (!isTeacher) {
+    res.json({ assessments: [] });
+    return;
+  }
   const list = Object.values(assessmentsDb)
     .filter((a) => isTeacher || a.status === "active")
     .map((a) => ({
