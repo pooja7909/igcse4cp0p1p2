@@ -121,6 +121,8 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
     if (editingAssessment?.shareSolutions !== undefined) return editingAssessment.shareSolutions;
     return (editingAssessment?.type || initialMode || "assessment") === "task";
   });
+  // Teacher setting: students may check each answer (marked by the server) before moving on
+  const [instantFeedback, setInstantFeedback] = useState<boolean>(() => Boolean(editingAssessment?.instantFeedback));
   const [customHeaderBanner, setCustomHeaderBanner] = useState<string>(() => {
     return editingAssessment?.customHeaderBanner || "";
   });
@@ -162,6 +164,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
           ? editingAssessment.shareSolutions
           : editingAssessment.type === "task"
       );
+      setInstantFeedback(Boolean(editingAssessment.instantFeedback));
       setCustomHeaderBanner(editingAssessment.customHeaderBanner || "");
       setCustomSubtitle(editingAssessment.customSubtitle || "");
       setCustomInstructions(editingAssessment.customInstructions || "");
@@ -358,6 +361,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
             allowCopyPaste,
             showOperatorToolbar,
             shareSolutions,
+            instantFeedback,
             questionIds: selectedTaskIds,
             questions: selectedQuestions,
             maxMarks: totalSelectedMarks,
@@ -402,6 +406,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
             allowCopyPaste,
             showOperatorToolbar,
             shareSolutions,
+            instantFeedback,
             questionIds: selectedTaskIds,
             questions: selectedQuestions,
             maxMarks: totalSelectedMarks,
@@ -439,6 +444,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
         allowCopyPaste,
         showOperatorToolbar,
         shareSolutions,
+        instantFeedback,
         questionIds: selectedTaskIds,
         questions: selectedTaskIds.map((id) => allTasks[id]).filter(Boolean),
         maxMarks: totalSelectedMarks,
@@ -913,6 +919,23 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
               <span className="font-bold text-slate-800">Show candidate auto-marked score immediately</span>
               <span className="text-[11px] text-slate-500 block">
                 Display total marks, percentage, and 9-1 grade right after candidate finishes.
+              </span>
+            </div>
+          </label>
+
+          <label className="flex items-start gap-2.5 cursor-pointer text-xs font-medium text-slate-700">
+            <input
+              type="checkbox"
+              checked={instantFeedback}
+              onChange={(e) => setInstantFeedback(e.target.checked)}
+              className="w-4 h-4 text-emerald-600 rounded focus:ring-emerald-500 mt-0.5 shrink-0"
+            />
+            <div>
+              <span className="font-bold text-slate-800">Students can check each answer as they go</span>
+              <span className="text-[11px] text-slate-500 block">
+                Shows a "Check answer" button under every question: students see whether their answer is correct (and
+                their marks) before moving on, up to 3 checks per question. The correct answer itself is not shown.
+                Best for practice tasks; leave off for formal exams.
               </span>
             </div>
           </label>
