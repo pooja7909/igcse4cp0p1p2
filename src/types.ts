@@ -172,6 +172,7 @@ export interface Assessment {
   id: string;
   title: string;
   instantFeedback?: boolean; // teacher setting: students may check each answer before moving on
+  classGroup?: string; // class name set by the teacher, e.g. "10A - Ms Arora" (used for every student who joins)
   feedbackDetail?: "result" | "tests" | "full"; // what a check shows for programming questions
   maxChecks?: number; // checks allowed per question (0 = unlimited)
   ownerId?: string; // teacher who created it (older assessments: the original "t_primary" account)
