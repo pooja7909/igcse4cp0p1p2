@@ -182,6 +182,8 @@ interface AssessmentStore {
   showOperatorToolbar?: boolean;
   shareSolutions?: boolean; // Teacher setting: whether students are allowed to view solutions/mark scheme
   instantFeedback?: boolean; // Teacher setting: students may check each answer before moving on
+  feedbackDetail?: "result" | "tests" | "full"; // how much a check shows for programming questions
+  maxChecks?: number; // checks allowed per question (0 = unlimited)
   releaseSettings?: ResultReleaseSettings;
   questionIds: string[];
   questions?: any[]; // Cached full question objects for cross-client consistency
@@ -1068,6 +1070,8 @@ function sanitizeAssessmentForStudent(a: AssessmentStore) {
     showOperatorToolbar: a.showOperatorToolbar !== undefined ? Boolean(a.showOperatorToolbar) : (a.type === "task"),
     shareSolutions: a.shareSolutions !== undefined ? Boolean(a.shareSolutions) : (a.type === "task"),
     instantFeedback: Boolean(a.instantFeedback),
+    feedbackDetail: a.feedbackDetail || "tests",
+    maxChecks: a.maxChecks ?? 3,
     questionIds: a.questionIds || [],
     maxMarks: a.maxMarks,
     gradeBoundaries: a.gradeBoundaries,
@@ -3777,7 +3781,20 @@ async function markAllQuestions(
   return { marks, notes, total };
 }
 
-async function autoMarkTaskOnServer(task: any, studentAns: any): Promise<{ m: number; feedback?: string }> {
+interface CodeTestDetail {
+  inputs: string[];
+  output: string;
+  expected: string;
+  passed: boolean;
+  marks: number;
+  maxMarks: number;
+  error?: string;
+}
+
+async function autoMarkTaskOnServer(
+  task: any,
+  studentAns: any
+): Promise<{ m: number; feedback?: string; tests?: CodeTestDetail[] }> {
   if (!task) return { m: 0 };
   const maxMarks = task.marks || 1;
 
@@ -4051,16 +4068,31 @@ async function autoMarkTaskOnServer(task: any, studentAns: any): Promise<{ m: nu
     let earnedMarks = 0;
     let passedTests = 0;
     const testWeight = maxMarks / tests.length;
+    const testDetails: CodeTestDetail[] = [];
 
     tests.forEach((test: any, i: number) => {
       const res = results[i];
+      const worth = typeof test.m === "number" ? test.m : testWeight;
+      let passed = false;
       if (res && !res.err) {
         const comp = flexibleCompareOutputs(res.out, test.out || "");
         if (comp.matches) {
+          passed = true;
           passedTests++;
-          earnedMarks += typeof test.m === "number" ? test.m : testWeight;
+          earnedMarks += worth;
         }
       }
+      // Last line of a Python error is the useful bit (e.g. "IndexError: list index out of range")
+      const errLine = res?.err ? String(res.err).trim().split("\n").filter(Boolean).pop() : undefined;
+      testDetails.push({
+        inputs: (test.in || []).map(String),
+        output: String(res?.out ?? "").slice(0, 2000),
+        expected: String(test.out ?? ""),
+        passed,
+        marks: passed ? Math.round(worth * 10) / 10 : 0,
+        maxMarks: Math.round(worth * 10) / 10,
+        error: errLine ? errLine.slice(0, 300) : undefined,
+      });
     });
 
     let awarded = Math.max(0, Math.min(maxMarks, Math.round(earnedMarks)));
@@ -4076,7 +4108,7 @@ async function autoMarkTaskOnServer(task: any, studentAns: any): Promise<{ m: nu
       }
     }
 
-    return { m: awarded, feedback };
+    return { m: awarded, feedback, tests: testDetails };
   }
 
   if (task.type === "theory") {
@@ -4157,6 +4189,8 @@ app.get("/api/assessments", (req, res) => {
       showOperatorToolbar: a.showOperatorToolbar,
       shareSolutions: a.shareSolutions,
       instantFeedback: Boolean(a.instantFeedback),
+      feedbackDetail: a.feedbackDetail || "tests",
+      maxChecks: a.maxChecks ?? 3,
       questionIds: a.questionIds || [],
       questions: isTeacher ? (a.questions || []) : undefined,
       questionCount: (a.questionIds || []).length,
@@ -4537,6 +4571,8 @@ app.post("/api/assessments", requireTeacher, (req, res) => {
     showOperatorToolbar: showOperatorToolbar !== undefined ? Boolean(showOperatorToolbar) : isTask,
     shareSolutions: shareSolutions !== undefined ? Boolean(shareSolutions) : isTask,
     instantFeedback: Boolean(instantFeedback),
+    feedbackDetail: cleanFeedbackDetail(req.body?.feedbackDetail),
+    maxChecks: cleanMaxChecks(req.body?.maxChecks),
     questionIds: questionIds || [],
     questions: Array.isArray(questions) ? questions : undefined,
     maxMarks: Number(maxMarks) || 20,
@@ -4578,6 +4614,8 @@ app.put("/api/assessments/:id", requireTeacher, (req, res) => {
   if (showOperatorToolbar !== undefined) a.showOperatorToolbar = Boolean(showOperatorToolbar);
   if (shareSolutions !== undefined) a.shareSolutions = Boolean(shareSolutions);
   if (req.body?.instantFeedback !== undefined) a.instantFeedback = Boolean(req.body.instantFeedback);
+  if (req.body?.feedbackDetail !== undefined) a.feedbackDetail = cleanFeedbackDetail(req.body.feedbackDetail);
+  if (req.body?.maxChecks !== undefined) a.maxChecks = cleanMaxChecks(req.body.maxChecks);
   if (Array.isArray(questionIds)) a.questionIds = questionIds;
   if (Array.isArray(questions)) a.questions = questions;
   if (maxMarks !== undefined) a.maxMarks = Math.max(1, Number(maxMarks) || 1);
@@ -4763,7 +4801,14 @@ app.post("/api/assessments/:id/progress", (req, res) => {
 // "Check answer": marks ONE answer on the server while the student is still working.
 // Only when the teacher switched it on for this assessment. The correct answer is never
 // sent back, only whether it is right and the marks, so students still have to work it out.
-const MAX_ANSWER_CHECKS = 3;
+function cleanFeedbackDetail(v: any): "result" | "tests" | "full" {
+  return v === "result" || v === "full" ? v : "tests";
+}
+function cleanMaxChecks(v: any): number {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) && n >= 0 && n <= 50 ? n : 3;
+}
+
 app.post("/api/assessments/:id/check", async (req, res) => {
   const { studentId, questionId, answer } = req.body || {};
   let a = assessmentsDb[req.params.id];
@@ -4791,8 +4836,9 @@ app.post("/api/assessments/:id/check", async (req, res) => {
     return;
   }
   const used = (s.answerChecks && s.answerChecks[questionId]) || 0;
-  if (used >= MAX_ANSWER_CHECKS) {
-    res.status(429).json({ error: `You have used all ${MAX_ANSWER_CHECKS} checks for this question.`, checksLeft: 0 });
+  const limit = a.maxChecks ?? 3; // 0 = unlimited
+  if (limit > 0 && used >= limit) {
+    res.status(429).json({ error: `You have used all ${limit} checks for this question.`, checksLeft: 0 });
     return;
   }
 
@@ -4806,13 +4852,43 @@ app.post("/api/assessments/:id/check", async (req, res) => {
   // Feedback for written/code answers explains what was missing; for multiple choice,
   // tables and short exact answers it would give the answer away, so it is not sent.
   const revealsAnswer = ["mcq", "inspect", "table", "sort"].includes(String(q.type));
+  // Programming questions: per-test results, as much as the teacher allows
+  const detail = a.feedbackDetail || "tests";
+  // input("Full name: ") prompts are printed without a new line, so they run into the
+  // program's real output ("Full name: Year: pat20"). Remove the student's own prompts
+  // from what is displayed, so they see just "pat20".
+  const prompts: string[] = [];
+  if (typeof answer === "string") {
+    for (const m of answer.matchAll(/input\(\s*(["'])((?:\\.|(?!\1).)*)\1\s*\)/g)) if (m[2]) prompts.push(m[2]);
+  }
+  const withoutPrompts = (out: string) => {
+    let text = out;
+    for (const pr of prompts) {
+      const i = text.indexOf(pr);
+      if (i >= 0) text = text.slice(0, i) + text.slice(i + pr.length);
+    }
+    return text;
+  };
+  const tests =
+    detail === "result" || !Array.isArray(result.tests)
+      ? undefined
+      : result.tests.map((t) => ({
+          inputs: t.inputs,
+          output: withoutPrompts(t.output),
+          passed: t.passed,
+          marks: t.marks,
+          maxMarks: t.maxMarks,
+          error: t.error,
+          ...(detail === "full" ? { expected: t.expected } : {}),
+        }));
   res.json({
     success: true,
     marks,
     maxMarks,
     verdict: marks >= maxMarks ? "correct" : marks > 0 ? "partial" : "incorrect",
     feedback: revealsAnswer ? undefined : result.feedback,
-    checksLeft: MAX_ANSWER_CHECKS - (used + 1),
+    tests,
+    checksLeft: limit > 0 ? limit - (used + 1) : null,
   });
 });
 
@@ -5301,6 +5377,8 @@ function buildStudentResultPayload(a: AssessmentStore, s: LiveStudentSession) {
       headerConfig: a.headerConfig,
       shareSolutions: a.shareSolutions,
       instantFeedback: Boolean(a.instantFeedback),
+      feedbackDetail: a.feedbackDetail || "tests",
+      maxChecks: a.maxChecks ?? 3,
       maxMarks: a.maxMarks,
       durationMinutes: a.durationMinutes,
       questionIds: a.questionIds,
