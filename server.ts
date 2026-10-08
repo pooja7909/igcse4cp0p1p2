@@ -115,6 +115,7 @@ app.use("/api", async (req, res, next) => {
 // In-memory & file-backed persistent data store for live exams & teacher dashboard
 interface LiveStudentSession {
   studentId: string;
+  answerChecks?: Record<string, number>; // "Check answer" uses per question
   name: string;
   candidateNumber: string;
   className: string;
@@ -180,6 +181,7 @@ interface AssessmentStore {
   allowCopyPaste?: boolean;
   showOperatorToolbar?: boolean;
   shareSolutions?: boolean; // Teacher setting: whether students are allowed to view solutions/mark scheme
+  instantFeedback?: boolean; // Teacher setting: students may check each answer before moving on
   releaseSettings?: ResultReleaseSettings;
   questionIds: string[];
   questions?: any[]; // Cached full question objects for cross-client consistency
@@ -1065,6 +1067,7 @@ function sanitizeAssessmentForStudent(a: AssessmentStore) {
     allowCopyPaste: a.allowCopyPaste !== undefined ? Boolean(a.allowCopyPaste) : (a.type === "task"),
     showOperatorToolbar: a.showOperatorToolbar !== undefined ? Boolean(a.showOperatorToolbar) : (a.type === "task"),
     shareSolutions: a.shareSolutions !== undefined ? Boolean(a.shareSolutions) : (a.type === "task"),
+    instantFeedback: Boolean(a.instantFeedback),
     questionIds: a.questionIds || [],
     maxMarks: a.maxMarks,
     gradeBoundaries: a.gradeBoundaries,
@@ -4153,6 +4156,7 @@ app.get("/api/assessments", (req, res) => {
       allowCopyPaste: a.allowCopyPaste,
       showOperatorToolbar: a.showOperatorToolbar,
       shareSolutions: a.shareSolutions,
+      instantFeedback: Boolean(a.instantFeedback),
       questionIds: a.questionIds || [],
       questions: isTeacher ? (a.questions || []) : undefined,
       questionCount: (a.questionIds || []).length,
@@ -4507,7 +4511,7 @@ app.post("/api/assessments/:id/duplicate", requireTeacher, (req, res) => {
 
 app.post("/api/assessments", requireTeacher, (req, res) => {
   const creator = getTeacherFromRequest(req);
-  const { title, durationMinutes, showScoreImmediately, allowCopyPaste, showOperatorToolbar, shareSolutions, customHeaderBanner, customSubtitle, customInstructions, headerConfig, questionIds, questions, maxMarks, type, gradeBoundaries } = req.body;
+  const { title, durationMinutes, showScoreImmediately, allowCopyPaste, showOperatorToolbar, shareSolutions, instantFeedback, customHeaderBanner, customSubtitle, customInstructions, headerConfig, questionIds, questions, maxMarks, type, gradeBoundaries } = req.body;
   const id = "a_" + Math.random().toString(36).substring(2, 8);
   const code = Math.random().toString(36).substring(2, 8).toUpperCase();
 
@@ -4532,6 +4536,7 @@ app.post("/api/assessments", requireTeacher, (req, res) => {
     allowCopyPaste: allowCopyPaste !== undefined ? Boolean(allowCopyPaste) : isTask,
     showOperatorToolbar: showOperatorToolbar !== undefined ? Boolean(showOperatorToolbar) : isTask,
     shareSolutions: shareSolutions !== undefined ? Boolean(shareSolutions) : isTask,
+    instantFeedback: Boolean(instantFeedback),
     questionIds: questionIds || [],
     questions: Array.isArray(questions) ? questions : undefined,
     maxMarks: Number(maxMarks) || 20,
@@ -4572,6 +4577,7 @@ app.put("/api/assessments/:id", requireTeacher, (req, res) => {
   if (allowCopyPaste !== undefined) a.allowCopyPaste = Boolean(allowCopyPaste);
   if (showOperatorToolbar !== undefined) a.showOperatorToolbar = Boolean(showOperatorToolbar);
   if (shareSolutions !== undefined) a.shareSolutions = Boolean(shareSolutions);
+  if (req.body?.instantFeedback !== undefined) a.instantFeedback = Boolean(req.body.instantFeedback);
   if (Array.isArray(questionIds)) a.questionIds = questionIds;
   if (Array.isArray(questions)) a.questions = questions;
   if (maxMarks !== undefined) a.maxMarks = Math.max(1, Number(maxMarks) || 1);
@@ -4752,6 +4758,62 @@ app.post("/api/assessments/:id/progress", (req, res) => {
 
   savePersistedAssessments();
   res.json({ success: true });
+});
+
+// "Check answer": marks ONE answer on the server while the student is still working.
+// Only when the teacher switched it on for this assessment. The correct answer is never
+// sent back, only whether it is right and the marks, so students still have to work it out.
+const MAX_ANSWER_CHECKS = 3;
+app.post("/api/assessments/:id/check", async (req, res) => {
+  const { studentId, questionId, answer } = req.body || {};
+  let a = assessmentsDb[req.params.id];
+  if (!a) a = Object.values(assessmentsDb).find((x) => x.code === String(req.params.id).toUpperCase()) as AssessmentStore;
+  if (!a) {
+    res.status(404).json({ error: "Assessment not found" });
+    return;
+  }
+  if (!a.instantFeedback) {
+    res.status(403).json({ error: "Your teacher has not switched on answer checking for this assessment." });
+    return;
+  }
+  const s = a.students?.[studentId];
+  if (!s) {
+    res.status(404).json({ error: "Student session not found. Please rejoin." });
+    return;
+  }
+  if (s.status === "submitted") {
+    res.status(400).json({ error: "This assessment has already been submitted." });
+    return;
+  }
+  const q = (enrichAssessment(a).questions || []).find((x: any) => x && x.id === questionId);
+  if (!q) {
+    res.status(404).json({ error: "Question not found." });
+    return;
+  }
+  const used = (s.answerChecks && s.answerChecks[questionId]) || 0;
+  if (used >= MAX_ANSWER_CHECKS) {
+    res.status(429).json({ error: `You have used all ${MAX_ANSWER_CHECKS} checks for this question.`, checksLeft: 0 });
+    return;
+  }
+
+  const result = await autoMarkTaskOnServer(q, answer);
+  s.answerChecks = { ...(s.answerChecks || {}), [questionId]: used + 1 };
+  s.lastActiveAt = Date.now();
+  savePersistedAssessments();
+
+  const maxMarks = Number(q.marks) || 1;
+  const marks = Math.max(0, Math.min(maxMarks, Number(result.m) || 0));
+  // Feedback for written/code answers explains what was missing; for multiple choice,
+  // tables and short exact answers it would give the answer away, so it is not sent.
+  const revealsAnswer = ["mcq", "inspect", "table", "sort"].includes(String(q.type));
+  res.json({
+    success: true,
+    marks,
+    maxMarks,
+    verdict: marks >= maxMarks ? "correct" : marks > 0 ? "partial" : "incorrect",
+    feedback: revealsAnswer ? undefined : result.feedback,
+    checksLeft: MAX_ANSWER_CHECKS - (used + 1),
+  });
 });
 
 // Student submits assessment (Server-authoritative auto-grading)
@@ -5238,6 +5300,7 @@ function buildStudentResultPayload(a: AssessmentStore, s: LiveStudentSession) {
       type: a.type,
       headerConfig: a.headerConfig,
       shareSolutions: a.shareSolutions,
+      instantFeedback: Boolean(a.instantFeedback),
       maxMarks: a.maxMarks,
       durationMinutes: a.durationMinutes,
       questionIds: a.questionIds,
