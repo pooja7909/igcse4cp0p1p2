@@ -5780,6 +5780,9 @@ async function pullSharedState(fresh: boolean | "all" = true, includeStudents = 
 function needsFreshData(req: express.Request): boolean | "all" {
   // Teacher actions (they send a login token) and logins see everything fresh
   if (req.method !== "GET" && (req.headers.authorization || /^\/teacher\//.test(req.path))) return "all";
+  // Teacher screens re-check exam data on every request, so a change saved through one
+  // server copy (e.g. grade boundaries) never shows the old value from another copy
+  if (req.headers.authorization) return true;
   // Student requests (join, autosave, submit) use data at most 15s old, unless they refer
   // to an assessment or student this server copy hasn't seen yet (checked below).
   const m = req.path.match(/^\/assessments\/([^/]+)/);
