@@ -123,6 +123,10 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
   });
   // Teacher setting: students may check each answer (marked by the server) before moving on
   const [instantFeedback, setInstantFeedback] = useState<boolean>(() => Boolean(editingAssessment?.instantFeedback));
+  const [feedbackDetail, setFeedbackDetail] = useState<"result" | "tests" | "full">(
+    () => editingAssessment?.feedbackDetail || "tests"
+  );
+  const [maxChecks, setMaxChecks] = useState<number>(() => editingAssessment?.maxChecks ?? 3);
   const [customHeaderBanner, setCustomHeaderBanner] = useState<string>(() => {
     return editingAssessment?.customHeaderBanner || "";
   });
@@ -165,6 +169,8 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
           : editingAssessment.type === "task"
       );
       setInstantFeedback(Boolean(editingAssessment.instantFeedback));
+      setFeedbackDetail(editingAssessment.feedbackDetail || "tests");
+      setMaxChecks(editingAssessment.maxChecks ?? 3);
       setCustomHeaderBanner(editingAssessment.customHeaderBanner || "");
       setCustomSubtitle(editingAssessment.customSubtitle || "");
       setCustomInstructions(editingAssessment.customInstructions || "");
@@ -362,6 +368,8 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
             showOperatorToolbar,
             shareSolutions,
             instantFeedback,
+            feedbackDetail,
+            maxChecks,
             questionIds: selectedTaskIds,
             questions: selectedQuestions,
             maxMarks: totalSelectedMarks,
@@ -407,6 +415,8 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
             showOperatorToolbar,
             shareSolutions,
             instantFeedback,
+            feedbackDetail,
+            maxChecks,
             questionIds: selectedTaskIds,
             questions: selectedQuestions,
             maxMarks: totalSelectedMarks,
@@ -445,6 +455,8 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
         showOperatorToolbar,
         shareSolutions,
         instantFeedback,
+        feedbackDetail,
+        maxChecks,
         questionIds: selectedTaskIds,
         questions: selectedTaskIds.map((id) => allTasks[id]).filter(Boolean),
         maxMarks: totalSelectedMarks,
@@ -934,11 +946,49 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
               <span className="font-bold text-slate-800">Students can check each answer as they go</span>
               <span className="text-[11px] text-slate-500 block">
                 Shows a "Check answer" button under every question: students see whether their answer is correct (and
-                their marks) before moving on, up to 3 checks per question. The correct answer itself is not shown.
+                their marks) before moving on. The correct answer itself is not shown.
                 Best for practice tasks; leave off for formal exams.
               </span>
             </div>
           </label>
+
+          {instantFeedback && (
+            <div className="ml-6 p-3 rounded-xl border border-emerald-200 bg-emerald-50/50 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              <label className="space-y-1">
+                <span className="font-bold text-slate-800 block">For programming questions, show:</span>
+                <select
+                  value={feedbackDetail}
+                  onChange={(e) => setFeedbackDetail(e.target.value as any)}
+                  className="w-full px-2 py-1.5 rounded-lg border border-slate-300 bg-white"
+                >
+                  <option value="result">Only right/wrong and marks</option>
+                  <option value="tests">Each test: input used, their output, pass/fail, marks (recommended)</option>
+                  <option value="full">Each test, including the expected output</option>
+                </select>
+                <span className="text-[11px] text-slate-500 block">
+                  Lets students see exactly which tests failed and where they lost marks.
+                </span>
+              </label>
+              <label className="space-y-1">
+                <span className="font-bold text-slate-800 block">Checks allowed per question:</span>
+                <select
+                  value={maxChecks}
+                  onChange={(e) => setMaxChecks(Number(e.target.value))}
+                  className="w-full px-2 py-1.5 rounded-lg border border-slate-300 bg-white"
+                >
+                  {[1, 2, 3, 5, 10].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                  <option value={0}>Unlimited</option>
+                </select>
+                <span className="text-[11px] text-slate-500 block">
+                  Fewer checks make students think before checking. Written answers use the Gemini allowance.
+                </span>
+              </label>
+            </div>
+          )}
 
           <label className="flex items-start gap-2.5 cursor-pointer text-xs font-medium text-slate-700">
             <input
