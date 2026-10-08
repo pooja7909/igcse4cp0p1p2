@@ -182,6 +182,7 @@ interface AssessmentStore {
   showOperatorToolbar?: boolean;
   shareSolutions?: boolean; // Teacher setting: whether students are allowed to view solutions/mark scheme
   instantFeedback?: boolean; // Teacher setting: students may check each answer before moving on
+  classGroup?: string; // Teacher setting: class name recorded for every student who joins
   feedbackDetail?: "result" | "tests" | "full"; // how much a check shows for programming questions
   maxChecks?: number; // checks allowed per question (0 = unlimited)
   releaseSettings?: ResultReleaseSettings;
@@ -1072,6 +1073,7 @@ function sanitizeAssessmentForStudent(a: AssessmentStore) {
     instantFeedback: Boolean(a.instantFeedback),
     feedbackDetail: a.feedbackDetail || "tests",
     maxChecks: a.maxChecks ?? 3,
+    classGroup: a.classGroup || undefined,
     questionIds: a.questionIds || [],
     maxMarks: a.maxMarks,
     gradeBoundaries: a.gradeBoundaries,
@@ -4191,6 +4193,7 @@ app.get("/api/assessments", (req, res) => {
       instantFeedback: Boolean(a.instantFeedback),
       feedbackDetail: a.feedbackDetail || "tests",
       maxChecks: a.maxChecks ?? 3,
+      classGroup: a.classGroup || undefined,
       questionIds: a.questionIds || [],
       questions: isTeacher ? (a.questions || []) : undefined,
       questionCount: (a.questionIds || []).length,
@@ -4572,6 +4575,7 @@ app.post("/api/assessments", requireTeacher, (req, res) => {
     shareSolutions: shareSolutions !== undefined ? Boolean(shareSolutions) : isTask,
     instantFeedback: Boolean(instantFeedback),
     feedbackDetail: cleanFeedbackDetail(req.body?.feedbackDetail),
+    classGroup: cleanClassGroup(req.body?.classGroup),
     maxChecks: cleanMaxChecks(req.body?.maxChecks),
     questionIds: questionIds || [],
     questions: Array.isArray(questions) ? questions : undefined,
@@ -4615,6 +4619,7 @@ app.put("/api/assessments/:id", requireTeacher, (req, res) => {
   if (shareSolutions !== undefined) a.shareSolutions = Boolean(shareSolutions);
   if (req.body?.instantFeedback !== undefined) a.instantFeedback = Boolean(req.body.instantFeedback);
   if (req.body?.feedbackDetail !== undefined) a.feedbackDetail = cleanFeedbackDetail(req.body.feedbackDetail);
+  if (req.body?.classGroup !== undefined) a.classGroup = cleanClassGroup(req.body.classGroup);
   if (req.body?.maxChecks !== undefined) a.maxChecks = cleanMaxChecks(req.body.maxChecks);
   if (Array.isArray(questionIds)) a.questionIds = questionIds;
   if (Array.isArray(questions)) a.questions = questions;
@@ -4741,7 +4746,8 @@ app.post("/api/assessments/:id/join", (req, res) => {
     // Reconnect to existing session for this student
     session = existingSession;
     session.lastActiveAt = Date.now();
-    if (className && !session.className) session.className = className;
+    if (a.classGroup) session.className = a.classGroup;
+    else if (className && !session.className) session.className = className;
   } else {
     // Create new session for this new student
     const studentId = "s_" + (cleanName || "student").replace(/[^a-z0-9]/g, "") + "_" + Math.random().toString(36).substring(2, 6);
@@ -4749,7 +4755,8 @@ app.post("/api/assessments/:id/join", (req, res) => {
       studentId,
       name: (name || "Anonymous Candidate").trim(),
       candidateNumber: candidateNumber || "C" + Math.floor(1000 + Math.random() * 9000),
-      className: className || "Class 1",
+      // The class set by the teacher on the assessment wins over what the student typed
+      className: a.classGroup || String(className || "").trim() || "Not given",
       status: "in_progress",
       currentQuestionIndex: 0,
       answeredQuestions: [],
@@ -4801,6 +4808,10 @@ app.post("/api/assessments/:id/progress", (req, res) => {
 // "Check answer": marks ONE answer on the server while the student is still working.
 // Only when the teacher switched it on for this assessment. The correct answer is never
 // sent back, only whether it is right and the marks, so students still have to work it out.
+function cleanClassGroup(v: any): string | undefined {
+  const t = String(v ?? "").trim().slice(0, 60);
+  return t || undefined;
+}
 function cleanFeedbackDetail(v: any): "result" | "tests" | "full" {
   return v === "result" || v === "full" ? v : "tests";
 }
@@ -5379,6 +5390,7 @@ function buildStudentResultPayload(a: AssessmentStore, s: LiveStudentSession) {
       instantFeedback: Boolean(a.instantFeedback),
       feedbackDetail: a.feedbackDetail || "tests",
       maxChecks: a.maxChecks ?? 3,
+      classGroup: a.classGroup || undefined,
       maxMarks: a.maxMarks,
       durationMinutes: a.durationMinutes,
       questionIds: a.questionIds,
