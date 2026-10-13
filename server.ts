@@ -4923,8 +4923,41 @@ app.post("/api/assessments/:id/submit", async (req, res) => {
   }
 
   const s = a.students[studentId];
+  // The first submission is final: a second one (another tab, a timer in an old window)
+  // must never replace the marked paper.
+  if (s.status === "submitted" && s.submittedAt && (s as any).markedAt) {
+    if (a.showScoreImmediately === false) {
+      res.json({
+        success: true,
+        confidential: true,
+        studentSession: { studentId: s.studentId, name: s.name, candidateNumber: s.candidateNumber, className: s.className, status: "submitted", submittedAt: s.submittedAt },
+      });
+    } else {
+      res.json({ success: true, studentSession: s });
+    }
+    return;
+  }
   s.status = "submitted";
-  s.answers = answers || s.answers || {};
+  // Keep everything already saved, and only replace an answer with a non-empty one,
+  // so a submission can never wipe out code or answers that were saved earlier.
+  const isEmptyAnswer = (v: any) =>
+    v === undefined || v === null || (typeof v === "string" && !v.trim()) || (Array.isArray(v) && v.length === 0);
+  const mergedAnswers: Record<string, any> = { ...(s.answers || {}) };
+  if (answers && typeof answers === "object") {
+    for (const [qid, v] of Object.entries(answers)) {
+      if (!isEmptyAnswer(v) || mergedAnswers[qid] === undefined) mergedAnswers[qid] = v;
+    }
+  }
+  s.answers = mergedAnswers;
+  if (!s.submittedAt) s.submittedAt = Date.now();
+  s.lastActiveAt = Date.now();
+  // Save the submitted answers to the database BEFORE marking, so the work is safe even
+  // if marking is slow or the request is cut off (the teacher can then use Re-evaluate).
+  try {
+    await pushSharedState();
+  } catch (err) {
+    console.warn("[submit] Could not save before marking:", err);
+  }
 
   // Execute authoritative server-side grading using the master unsanitized question bank
   const enriched = enrichAssessment(a);
@@ -4949,7 +4982,7 @@ app.post("/api/assessments/:id/submit", async (req, res) => {
   }
 
   s.percentage = a.maxMarks > 0 ? Math.round((s.totalMarks / a.maxMarks) * 100) : 0;
-  s.submittedAt = Date.now();
+  (s as any).markedAt = Date.now();
   s.lastActiveAt = Date.now();
 
   savePersistedAssessments();
@@ -4972,6 +5005,27 @@ app.post("/api/assessments/:id/submit", async (req, res) => {
   } else {
     res.json({ success: true, studentSession: s });
   }
+});
+
+// Teacher removes one student's attempt (e.g. joined twice, wrong name, or to let them start again)
+app.delete("/api/assessments/:id/students/:studentId", requireTeacher, (req, res) => {
+  let a = assessmentsDb[req.params.id];
+  if (!a) {
+    a = Object.values(assessmentsDb).find((x) => x.code === req.params.id.toUpperCase()) as AssessmentStore;
+  }
+  if (!a) {
+    res.status(404).json({ error: "Assessment not found" });
+    return;
+  }
+  const sid = req.params.studentId;
+  if (!a.students || !a.students[sid]) {
+    res.status(404).json({ error: "Student not found" });
+    return;
+  }
+  const removedName = a.students[sid].name;
+  delete a.students[sid];
+  savePersistedAssessments();
+  res.json({ success: true, removed: sid, name: removedName });
 });
 
 // Teacher views live progress & analytics (Protected with requireTeacher)
@@ -5110,6 +5164,7 @@ app.post("/api/assessments/:id/regrade-student", requireTeacher, async (req, res
   s.marks = officialMarks;
   s.totalMarks = calculatedTotal;
   s.percentage = a.maxMarks > 0 ? Math.round((s.totalMarks / a.maxMarks) * 100) : 0;
+  if (s.status === "submitted") (s as any).markedAt = Date.now();
   savePersistedAssessments();
 
   res.json({ success: true, studentSession: s });
@@ -5694,7 +5749,7 @@ function initSharedCollections() {
     {
       // In-progress answers: save at most every 90s per student (the browser keeps
       // the answers and sends them all on submit, so nothing is lost)
-      writeDelayMs: (_id, v) => (v && v.status === "in_progress" ? Number(process.env.PROGRESS_SAVE_DELAY_MS) || 90_000 : 0),
+      writeDelayMs: (_id, v) => (v && v.status === "in_progress" ? Number(process.env.PROGRESS_SAVE_DELAY_MS) || 15_000 : 0),
       // A server copy that hasn't seen the submission must never undo it
       needsOverwriteCheck: (_id, v) => !v || v.status !== "submitted",
       shouldOverwrite: (_id, _local, remote) => !(remote && remote.status === "submitted"),
