@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Assessment, IGCSETask, StudentSession, MarkResult } from "../../types";
 import { QuestionCard } from "../QuestionCard";
-import { autoMarkTask } from "../../utils/autoMarker";
 import { syncStudentSessionToFirestore } from "../../firebase";
 import {
   Clock,
@@ -13,6 +12,13 @@ import {
   HelpCircle,
   ShieldAlert,
 } from "lucide-react";
+
+function isEmptyAnswer(v: any): boolean {
+  if (v === undefined || v === null) return true;
+  if (typeof v === "string") return !v.trim();
+  if (Array.isArray(v)) return v.length === 0 || v.every((x) => isEmptyAnswer(x));
+  return false;
+}
 
 interface ExamSessionProps {
   assessment: Assessment;
@@ -36,13 +42,45 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
 }) => {
   const [liveAssessment, setLiveAssessment] = useState<Assessment>(assessment);
   const [currentIdx, setCurrentIdx] = useState(0);
-  const [answers, setAnswers] = useState<Record<string, any>>(studentSession.answers || {});
+  // Backup of the answers in this browser, so a refresh, a crash or a lost connection
+  // never loses work (the server copy is restored first, then anything newer from here).
+  const backupKey = `exam_backup_${assessment.id}_${studentSession.studentId}`;
+  const [restoredCount, setRestoredCount] = useState(0);
+  const [answers, setAnswers] = useState<Record<string, any>>(() => {
+    const server: Record<string, any> = { ...(studentSession.answers || {}) };
+    let backup: { answers?: Record<string, any>; changedAt?: number; saved?: boolean } | null = null;
+    try {
+      const raw = localStorage.getItem(backupKey);
+      backup = raw ? JSON.parse(raw) : null;
+    } catch {
+      backup = null;
+    }
+    if (!backup || !backup.answers || typeof backup.answers !== "object") return server;
+    // saved === false: the last thing typed here never reached the server, so it is newer
+    const backupIsNewer = backup.saved === false;
+    let restored = 0;
+    for (const [qid, v] of Object.entries(backup.answers)) {
+      if (isEmptyAnswer(v)) continue;
+      if (isEmptyAnswer(server[qid]) || (backupIsNewer && JSON.stringify(server[qid]) !== JSON.stringify(v))) {
+        server[qid] = v;
+        restored++;
+      }
+    }
+    if (restored) setTimeout(() => setRestoredCount(restored), 0);
+    return server;
+  });
   const [secondsRemaining, setSecondsRemaining] = useState<number>(
     liveAssessment.durationMinutes > 0 ? liveAssessment.durationMinutes * 60 : 0
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showConfirmSubmit, setShowConfirmSubmit] = useState(false);
   const autoSaveTimerRef = useRef<any>(null);
+  // Always holds the latest answers. The exam timer's auto-submit runs from a callback
+  // created when the exam opened; without this it would submit the answers from that
+  // moment (usually none) instead of what the student has written since.
+  const answersRef = useRef<Record<string, any>>(answers);
+  answersRef.current = answers;
+  const submittingRef = useRef(false);
 
   // Poll for assessment edits so live updates reflect in the exam hall without refreshing
   useEffect(() => {
@@ -192,52 +230,142 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
     return () => clearInterval(timer);
   }, [liveAssessment.durationMinutes]);
 
-  // Periodic live progress push to server and Firestore (so teacher dashboard updates live)
-  useEffect(() => {
-    const pushProgress = async () => {
-      try {
-        const answeredIds = Object.keys(answers).filter((id) => {
-          const val = answers[id];
-          if (val === undefined || val === null || val === "") return false;
-          if (Array.isArray(val) && val.length === 0) return false;
-          return true;
-        });
+  // ---------- Saving work ----------
+  // "saved": the server has everything. "unsaved": changes not sent yet (they are always
+  // kept in this browser). "saving": sending now. "error": the last save failed.
+  const [saveState, setSaveState] = useState<"saved" | "unsaved" | "saving" | "error">("saved");
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const [attemptMissing, setAttemptMissing] = useState(false);
+  const [otherTabOpen, setOtherTabOpen] = useState(false);
+  const lastSavedJsonRef = useRef<string>(JSON.stringify(studentSession.answers || {}));
+  const firstUnsavedAtRef = useRef<number | null>(null);
+  const saveInFlightRef = useRef(false);
+  const currentIdxRef = useRef(currentIdx);
+  currentIdxRef.current = currentIdx;
+  const finishedRef = useRef(false);
 
-        // 1. Sync live progress to Firestore in real time
-        syncStudentSessionToFirestore(liveAssessment.id, {
+  const answeredIdsOf = (ans: Record<string, any>) => Object.keys(ans).filter((id) => !isEmptyAnswer(ans[id]));
+
+  const saveProgress = async (opts: { keepalive?: boolean } = {}): Promise<boolean> => {
+    if (finishedRef.current || submittingRef.current) return true;
+    if (saveInFlightRef.current && !opts.keepalive) return false;
+    const snapshot = answersRef.current;
+    const json = JSON.stringify(snapshot);
+    saveInFlightRef.current = true;
+    if (!opts.keepalive) setSaveState("saving");
+    try {
+      const res = await fetch(`/api/assessments/${assessment.id}/progress`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        keepalive: opts.keepalive,
+        body: JSON.stringify({
           studentId: studentSession.studentId,
-          name: studentSession.name,
-          candidateNumber: studentSession.candidateNumber,
-          className: studentSession.className,
-          status: "in_progress",
-          currentQuestionIndex: currentIdx,
-          answeredQuestions: answeredIds,
-          answers,
-          lastActiveAt: Date.now(),
-        });
+          currentQuestionIndex: currentIdxRef.current,
+          answeredQuestions: answeredIdsOf(snapshot),
+          answers: snapshot,
+        }),
+      });
+      if (res.status === 404) {
+        setAttemptMissing(true);
+        setSaveState("error");
+        return false;
+      }
+      if (!res.ok) throw new Error("save failed " + res.status);
+      lastSavedJsonRef.current = json;
+      setLastSavedAt(Date.now());
+      setAttemptMissing(false);
+      if (JSON.stringify(answersRef.current) === json) {
+        firstUnsavedAtRef.current = null;
+        setSaveState("saved");
+        try {
+          localStorage.setItem(backupKey, JSON.stringify({ answers: snapshot, changedAt: Date.now(), saved: true }));
+        } catch {}
+      } else {
+        setSaveState("unsaved"); // more was typed while saving; the next save sends it
+      }
+      return true;
+    } catch {
+      setSaveState("error");
+      return false;
+    } finally {
+      saveInFlightRef.current = false;
+    }
+  };
 
-        // 2. Also notify backend API
-        await fetch(`/api/assessments/${assessment.id}/progress`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            studentId: studentSession.studentId,
-            currentQuestionIndex: currentIdx,
-            answeredQuestions: answeredIds,
-            answers,
-          }),
-        });
-      } catch (e) {
-        // silent sync fallback
+  // Every change: keep a copy in this browser at once, and send it to the server 20s after
+  // the student stops typing (and at least once a minute while they keep typing).
+  useEffect(() => {
+    if (finishedRef.current) return;
+    try {
+      localStorage.setItem(
+        backupKey,
+        JSON.stringify({ answers, changedAt: Date.now(), saved: JSON.stringify(answers) === lastSavedJsonRef.current })
+      );
+    } catch {}
+    if (JSON.stringify(answers) === lastSavedJsonRef.current) return;
+    const now = Date.now();
+    if (firstUnsavedAtRef.current === null) firstUnsavedAtRef.current = now;
+    setSaveState((st) => (st === "error" ? "error" : "unsaved"));
+    const wait = Math.max(0, Math.min(20000, 60000 - (now - firstUnsavedAtRef.current)));
+    clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => saveProgress(), wait);
+    return () => clearTimeout(autoSaveTimerRef.current);
+  }, [answers]);
+
+  // Moving to another question saves straight away
+  const firstIdxRun = useRef(true);
+  useEffect(() => {
+    if (firstIdxRun.current) {
+      firstIdxRun.current = false;
+      return;
+    }
+    if (JSON.stringify(answersRef.current) !== lastSavedJsonRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      saveProgress();
+    }
+  }, [currentIdx]);
+
+  // After a failed save, keep retrying every 15s
+  useEffect(() => {
+    if (saveState !== "error" || attemptMissing) return;
+    const t = setTimeout(() => saveProgress(), 15000);
+    return () => clearTimeout(t);
+  }, [saveState, attemptMissing]);
+
+  // Leaving the page: send the latest answers and warn if something is not saved yet
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (finishedRef.current) return;
+      if (JSON.stringify(answersRef.current) !== lastSavedJsonRef.current) {
+        saveProgress({ keepalive: true });
+        e.preventDefault();
+        e.returnValue = "";
       }
     };
+    const onHide = () => {
+      if (document.visibilityState === "hidden" && JSON.stringify(answersRef.current) !== lastSavedJsonRef.current) {
+        saveProgress({ keepalive: true });
+      }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      document.removeEventListener("visibilitychange", onHide);
+    };
+  }, []);
 
-    clearTimeout(autoSaveTimerRef.current);
-    // Save 10s after the last change (was 1.2s, which wrote to the database on almost every keystroke)
-    autoSaveTimerRef.current = setTimeout(pushProgress, 10000);
-
-    return () => clearTimeout(autoSaveTimerRef.current);
-  }, [currentIdx, answers, assessment.id, liveAssessment.id, studentSession]);
+  // Warn when the same exam is open in another tab or window of this browser
+  useEffect(() => {
+    if (typeof BroadcastChannel === "undefined") return;
+    const ch = new BroadcastChannel(`exam_${assessment.id}_${studentSession.studentId}`);
+    ch.onmessage = (ev) => {
+      if (ev.data === "hello") ch.postMessage("here");
+      if (ev.data === "hello" || ev.data === "here") setOtherTabOpen(true);
+    };
+    ch.postMessage("hello");
+    return () => ch.close();
+  }, [assessment.id, studentSession.studentId]);
 
   const handleAnswerChange = (newAns: any) => {
     if (!currentTask) return;
@@ -252,9 +380,20 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
     await executeSubmission();
   };
 
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
   const executeSubmission = async () => {
+    // Only one submission at a time (e.g. clicking Submit just as the timer runs out)
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    clearTimeout(autoSaveTimerRef.current);
+    const answers = answersRef.current;
+    try {
+      localStorage.setItem(backupKey, JSON.stringify({ answers, changedAt: Date.now(), saved: false }));
+    } catch {}
     setIsSubmitting(true);
     setShowConfirmSubmit(false);
+    setSubmitError(null);
 
     let marksRecord: Record<string, number> = {};
     let detailedRecord: Record<string, MarkResult> = {};
@@ -263,48 +402,57 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
     let serverMarked = false;
     let serverConfidential = false;
 
-    // 1. Submit to the server first. The server marks against the full mark scheme
-    //    (expected outputs, mark points, AI examiner), which the browser never sees.
-    try {
-      const res = await fetch(`/api/assessments/${liveAssessment.id}/submit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ studentId: studentSession.studentId, answers }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        serverMarked = true;
-        serverConfidential = Boolean(data.confidential);
-        const serverSession = data.studentSession || {};
-        if (!serverConfidential && serverSession.marks) {
-          marksRecord = serverSession.marks;
-          const notes: Record<string, string> = serverSession.markingNotes || {};
-          for (const task of questionsList) {
-            const m = marksRecord[task.id] ?? 0;
-            const M = task.marks || 0;
-            detailedRecord[task.id] = { m, M, passed: M > 0 && m >= M * 0.7, feedback: notes[task.id] } as MarkResult;
+    // 1. Submit to the server, which marks against the full mark scheme. Tried up to
+    //    3 times; the exam only finishes once the server has really received the answers.
+    let lastProblem = "";
+    for (let attempt = 0; attempt < 3 && !serverMarked; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, attempt * 3000));
+      try {
+        const res = await fetch(`/api/assessments/${liveAssessment.id}/submit`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ studentId: studentSession.studentId, answers }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          serverMarked = true;
+          serverConfidential = Boolean(data.confidential);
+          const serverSession = data.studentSession || {};
+          if (!serverConfidential && serverSession.marks) {
+            marksRecord = serverSession.marks;
+            const notes: Record<string, string> = serverSession.markingNotes || {};
+            for (const task of questionsList) {
+              const m = marksRecord[task.id] ?? 0;
+              const M = task.marks || 0;
+              detailedRecord[task.id] = { m, M, passed: M > 0 && m >= M * 0.7, feedback: notes[task.id] } as MarkResult;
+            }
+            totalMarks = serverSession.totalMarks ?? Object.values(marksRecord).reduce((acc, m) => acc + (m || 0), 0);
+            percentage = serverSession.percentage ?? 0;
           }
-          totalMarks = serverSession.totalMarks ?? Object.values(marksRecord).reduce((acc, m) => acc + (m || 0), 0);
-          percentage = serverSession.percentage ?? 0;
+        } else {
+          lastProblem = res.status === 404 ? "missing" : `status ${res.status}`;
+          if (res.status === 404) break;
         }
-      } else {
-        console.warn("Server submission failed with status", res.status);
+      } catch (e) {
+        lastProblem = "offline";
       }
-    } catch (e) {
-      console.warn("Server submission unavailable, marking in the browser instead", e);
     }
 
-    // 2. Offline fallback only: mark in the browser if the server could not be reached.
+    // 2. Not received: keep the exam open (answers are kept on this computer) and tell the student.
     if (!serverMarked) {
-      for (const task of questionsList) {
-        const studentAns = answers[task.id];
-        const markRes = await autoMarkTask(task, studentAns);
-        marksRecord[task.id] = markRes.m;
-        detailedRecord[task.id] = markRes;
-        totalMarks += markRes.m;
-      }
-      percentage = liveAssessment.maxMarks > 0 ? Math.round((totalMarks / liveAssessment.maxMarks) * 100) : 0;
+      submittingRef.current = false;
+      setIsSubmitting(false);
+      setSubmitError(
+        lastProblem === "missing"
+          ? "Your attempt could not be found on the server (your teacher may have removed it). Your answers are still kept on this computer. Do not close this page - tell your teacher now."
+          : "Your answers have NOT reached your teacher yet (no connection or the server is busy). They are kept on this computer. Do not close this page - check your internet and press \"Try again\"."
+      );
+      return;
     }
+    finishedRef.current = true;
+    try {
+      localStorage.removeItem(backupKey);
+    } catch {}
 
     // 3. Real-time notification so the teacher's screen updates instantly.
     //    Marks are only included when they came from the server (or offline fallback);
@@ -418,6 +566,83 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
           </span>
         </div>
       </div>
+
+      {/* Saving status and warnings */}
+      <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+        <div
+          className={`inline-flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-lg border ${
+            saveState === "error"
+              ? "bg-red-50 border-red-300 text-red-700"
+              : saveState === "saved"
+              ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+              : "bg-amber-50 border-amber-200 text-amber-800"
+          }`}
+          role="status"
+        >
+          {saveState === "saved" && (
+            <span>✓ All work saved{lastSavedAt ? ` at ${new Date(lastSavedAt).toLocaleTimeString()}` : ""}</span>
+          )}
+          {saveState === "unsaved" && <span>● Changes not sent yet (kept on this computer, saving automatically)</span>}
+          {saveState === "saving" && <span>Saving…</span>}
+          {saveState === "error" && (
+            <span>⚠ Your latest work is NOT saved to the server - check your internet. It is kept on this computer; do not close this page.</span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            clearTimeout(autoSaveTimerRef.current);
+            saveProgress();
+          }}
+          disabled={saveState === "saving"}
+          className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 text-xs font-bold shadow-sm disabled:opacity-50"
+        >
+          Save now
+        </button>
+      </div>
+
+      {restoredCount > 0 && (
+        <div className="bg-sky-50 border border-sky-300 text-sky-900 rounded-xl px-4 py-2.5 text-sm flex items-start justify-between gap-3">
+          <span>
+            We restored {restoredCount} answer{restoredCount === 1 ? "" : "s"} saved on this computer. Check your work and carry on.
+          </span>
+          <button type="button" onClick={() => setRestoredCount(0)} className="text-sky-700 font-bold text-xs">
+            OK
+          </button>
+        </div>
+      )}
+
+      {otherTabOpen && (
+        <div className="bg-red-50 border border-red-300 text-red-800 rounded-xl px-4 py-2.5 text-sm font-semibold">
+          ⚠ This exam is open in another tab or window. Close the other one and only use one - otherwise you could lose work.
+        </div>
+      )}
+
+      {attemptMissing && !submitError && (
+        <div className="bg-red-50 border border-red-300 text-red-800 rounded-xl px-4 py-2.5 text-sm font-semibold">
+          ⚠ Your attempt could not be found on the server (your teacher may have removed it). Your answers are kept on this computer. Tell your teacher now.
+        </div>
+      )}
+
+      {liveAssessment.durationMinutes > 0 && secondsRemaining > 0 && secondsRemaining <= 300 && (
+        <div className="bg-amber-50 border border-amber-300 text-amber-900 rounded-xl px-4 py-2.5 text-sm font-semibold">
+          ⏱ Less than {Math.ceil(secondsRemaining / 60)} minute{Math.ceil(secondsRemaining / 60) === 1 ? "" : "s"} left. When time runs out, everything you have written is submitted automatically.
+        </div>
+      )}
+
+      {submitError && (
+        <div className="bg-red-50 border-2 border-red-400 text-red-800 rounded-xl px-4 py-3 text-sm font-semibold flex flex-wrap items-center justify-between gap-3">
+          <span>⚠ {submitError}</span>
+          <button
+            type="button"
+            onClick={() => executeSubmission()}
+            disabled={isSubmitting}
+            className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-bold disabled:opacity-50"
+          >
+            {isSubmitting ? "Sending…" : "Try again"}
+          </button>
+        </div>
+      )}
 
       {/* Question Navigation Strip */}
       <div className="bg-white border border-slate-200 rounded-xl p-3 flex items-center gap-2 overflow-x-auto">

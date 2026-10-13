@@ -295,6 +295,38 @@ export const LiveAnalyticsView: React.FC<LiveAnalyticsViewProps> = ({
     }
   };
 
+  const [isRemoving, setIsRemoving] = useState(false);
+  const handleRemoveStudent = async () => {
+    if (!selectedStudent || !assessment?.id) return;
+    const who = selectedStudent.name || "this student";
+    if (
+      !window.confirm(
+        `Remove ${who} from this assessment?\n\nTheir answers and marks for this assessment will be deleted. This cannot be undone.\nThey can then join again with the same code and start a new attempt.`
+      )
+    )
+      return;
+    setIsRemoving(true);
+    try {
+      const res = await teacherFetch(
+        `/api/assessments/${assessment.id}/students/${encodeURIComponent(selectedStudent.studentId)}`,
+        { method: "DELETE" }
+      );
+      if (res.ok || res.status === 404) {
+        const sid = selectedStudent.studentId;
+        setStudents((prev) => prev.filter((s) => s.studentId !== sid));
+        setSelectedStudent(null);
+        fetchLiveData();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        window.alert(data.error || "Could not remove the student. Please try again.");
+      }
+    } catch {
+      window.alert("Could not reach the server. Please try again.");
+    } finally {
+      setIsRemoving(false);
+    }
+  };
+
   const handleGenerateAiFeedback = async () => {
     if (!selectedStudent || !assessment?.id) return;
     setGeneratingAiFeedback(true);
@@ -943,6 +975,14 @@ ${diag.questionBreakdowns
                   >
                     <RotateCcw className={`w-3.5 h-3.5 ${isRegrading ? "animate-spin" : ""}`} />
                     {isRegrading ? "Re-evaluating..." : "Re-evaluate Answers"}
+                  </button>
+                  <button
+                    onClick={handleRemoveStudent}
+                    disabled={isRemoving}
+                    className="px-3 py-1.5 rounded-lg border border-red-300 bg-white hover:bg-red-50 text-red-700 text-xs font-bold shadow-sm transition-all disabled:opacity-50"
+                    title="Delete this student's attempt from this assessment"
+                  >
+                    {isRemoving ? "Removing..." : "Remove student"}
                   </button>
                 </div>
               </div>
