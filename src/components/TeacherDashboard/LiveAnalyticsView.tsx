@@ -214,8 +214,19 @@ export const LiveAnalyticsView: React.FC<LiveAnalyticsViewProps> = ({
     document.body.removeChild(link);
   };
 
-  const handleSaveOverride = async () => {
+  const [markSaveMsg, setMarkSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [savingMark, setSavingMark] = useState(false);
+
+  const handleSaveOverride = async (maxForQuestion: number) => {
     if (!selectedStudent || !selectedQId) return;
+    const raw = Number(overrideMark);
+    if (overrideMark.trim() === "" || !Number.isFinite(raw)) {
+      setMarkSaveMsg({ ok: false, text: "Please type a number of marks." });
+      return;
+    }
+    const mark = Math.max(0, Math.min(maxForQuestion, raw));
+    setSavingMark(true);
+    setMarkSaveMsg(null);
     try {
       const res = await teacherFetch(`/api/assessments/${assessment.id}/override-mark`, {
         method: "POST",
@@ -223,21 +234,42 @@ export const LiveAnalyticsView: React.FC<LiveAnalyticsViewProps> = ({
         body: JSON.stringify({
           studentId: selectedStudent.studentId,
           questionId: selectedQId,
-          mark: Number(overrideMark),
+          mark,
           feedback: feedbackNote,
         }),
       });
-      if (res.ok) {
-        const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.studentSession) {
         setSelectedStudent(data.studentSession);
+        setStudents((prev) =>
+          prev.map((s) => (s.studentId === data.studentSession.studentId ? data.studentSession : s))
+        );
         syncStudentSessionToFirestore(assessment.id, data.studentSession).catch(() => {});
+        setMarkSaveMsg({
+          ok: true,
+          text: `✓ Saved: ${mark}/${maxForQuestion} for this question. New total ${data.studentSession.totalMarks ?? "-"}/${assessment.maxMarks}.`,
+        });
         fetchLiveData();
+      } else {
+        setMarkSaveMsg({ ok: false, text: "Not saved: " + (data.error || `server error ${res.status}`) + ". Please try again." });
       }
     } catch (e) {
-      alert("Failed to update mark");
+      setMarkSaveMsg({ ok: false, text: "Not saved: could not reach the server. Please try again." });
+    } finally {
+      setSavingMark(false);
     }
   };
 
+  // Bring the "Adjust mark" box into view when it opens
+  useEffect(() => {
+    if (!selectedQId) return;
+    const t = setTimeout(() => {
+      document.getElementById(`adjust-mark-${selectedQId}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, 50);
+    return () => clearTimeout(t);
+  }, [selectedQId]);
+
+  const [quickMarkMsg, setQuickMarkMsg] = useState<{ qId: string; ok: boolean; text: string } | null>(null);
   const handleQuickMark = async (qId: string, markValue: number) => {
     if (!selectedStudent || !assessment?.id) return;
     try {
@@ -258,11 +290,15 @@ export const LiveAnalyticsView: React.FC<LiveAnalyticsViewProps> = ({
           setStudents((prev) =>
             prev.map((s) => (s.studentId === data.studentSession.studentId ? data.studentSession : s))
           );
+          setQuickMarkMsg({ qId, ok: true, text: `✓ Saved ${markValue} mark${markValue === 1 ? "" : "s"}` });
           fetchLiveData();
         }
+      } else {
+        setQuickMarkMsg({ qId, ok: false, text: "Not saved - please try again" });
       }
     } catch (err) {
       console.error("Failed to update quick mark:", err);
+      setQuickMarkMsg({ qId, ok: false, text: "Not saved - could not reach the server" });
     }
   };
 
@@ -1384,65 +1420,85 @@ ${diag.questionBreakdowns
                           ))}
                         </div>
 
+                        {quickMarkMsg && quickMarkMsg.qId === qId && (
+                          <span className={`font-semibold ${quickMarkMsg.ok ? "text-emerald-700" : "text-red-700"}`}>
+                            {quickMarkMsg.text}
+                          </span>
+                        )}
                         <button
                           onClick={() => {
-                            setSelectedQId(qId);
-                            setOverrideMark(String(awarded));
+                            setSelectedQId(selectedQId === qId ? "" : qId);
+                            setOverrideMark(String(awarded ?? 0));
                             setFeedbackNote(selectedStudent.feedback || "");
+                            setMarkSaveMsg(null);
                           }}
                           className="text-purple-700 hover:text-purple-900 font-semibold inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-purple-50 hover:bg-purple-100 transition-colors border border-purple-200/60"
                         >
                           <Edit3 className="w-3.5 h-3.5" /> Adjust Mark & Comment
                         </button>
                       </div>
+
+                      {selectedQId === qId && (
+                        <div
+                          id={`adjust-mark-${qId}`}
+                          className="p-4 bg-purple-50 border border-purple-300 rounded-xl space-y-3"
+                        >
+                          <div className="flex items-center justify-between">
+                            <h5 className="text-xs font-bold text-purple-900">
+                              Adjust mark for Question {qIdx + 1}
+                              {task?.title ? `: ${task.title}` : ""}
+                            </h5>
+                            <button onClick={() => setSelectedQId("")} className="text-slate-400 hover:text-slate-600" title="Close">
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <label className="text-xs font-medium text-slate-700">Marks awarded:</label>
+                            <input
+                              type="number"
+                              autoFocus
+                              value={overrideMark}
+                              onChange={(e) => setOverrideMark(e.target.value)}
+                              max={maxM}
+                              min={0}
+                              className="w-20 px-2 py-1 text-sm border border-slate-300 rounded bg-white font-mono"
+                            />
+                            <span className="text-xs text-slate-500">/ {maxM} marks</span>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-xs font-medium text-slate-700">
+                              Teacher comment for this student (one overall comment, shown with their results):
+                            </label>
+                            <textarea
+                              value={feedbackNote}
+                              onChange={(e) => setFeedbackNote(e.target.value)}
+                              placeholder="e.g. Excellent syntax, watch indentation on the loop..."
+                              rows={2}
+                              className="w-full p-2 text-xs border border-slate-300 rounded bg-white"
+                            />
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <button
+                              onClick={() => handleSaveOverride(maxM)}
+                              disabled={savingMark}
+                              className="px-4 py-1.5 rounded-lg bg-purple-700 hover:bg-purple-800 text-white font-semibold text-xs transition-colors disabled:opacity-50"
+                            >
+                              {savingMark ? "Saving..." : "Save mark & comment"}
+                            </button>
+                            {markSaveMsg && (
+                              <span className={`text-xs font-semibold ${markSaveMsg.ok ? "text-emerald-700" : "text-red-700"}`}>
+                                {markSaveMsg.text}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
               </div>
 
-              {/* Mark Override / Feedback Editor if active */}
-              {selectedQId && (
-                <div className="p-4 bg-purple-50 border border-purple-300 rounded-xl space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h5 className="text-xs font-bold text-purple-900">
-                      Adjust Mark for {allTasks[selectedQId]?.title || selectedQId}
-                    </h5>
-                    <button onClick={() => setSelectedQId("")} className="text-slate-400 hover:text-slate-600">
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <label className="text-xs font-medium text-slate-700">Awarded Marks:</label>
-                    <input
-                      type="number"
-                      value={overrideMark}
-                      onChange={(e) => setOverrideMark(e.target.value)}
-                      max={allTasks[selectedQId]?.marks || 20}
-                      min={0}
-                      className="w-20 px-2 py-1 text-sm border border-slate-300 rounded bg-white font-mono"
-                    />
-                    <span className="text-xs text-slate-500">
-                      / {allTasks[selectedQId]?.marks || 20} Marks
-                    </span>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-xs font-medium text-slate-700">Teacher Feedback to Student:</label>
-                    <textarea
-                      value={feedbackNote}
-                      onChange={(e) => setFeedbackNote(e.target.value)}
-                      placeholder="e.g. Excellent syntax, watch indentation on the loop..."
-                      rows={2}
-                      className="w-full p-2 text-xs border border-slate-300 rounded bg-white"
-                    />
-                  </div>
-                  <button
-                    onClick={handleSaveOverride}
-                    className="px-4 py-1.5 rounded-lg bg-purple-700 hover:bg-purple-800 text-white font-semibold text-xs transition-colors"
-                  >
-                    Save Adjusted Mark
-                  </button>
-                </div>
-              )}
+
             </div>
           </div>
         </div>
