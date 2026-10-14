@@ -1060,7 +1060,92 @@ function sanitizeTaskForStudent(task: any, allowHints = false) {
   return safe;
 }
 
-function sanitizeAssessmentForStudent(a: AssessmentStore) {
+// ---------- Multiple choice: each student sees the options in their own order ----------
+// The order is fixed per student (the same after a refresh), so position gives nothing away.
+// Answers are stored and marked in the original order, so teachers see them as written.
+function seededOrder(seed: string, n: number): number[] {
+  let h = crypto.createHash("sha256").update(seed).digest();
+  let k = 0;
+  const next = () => {
+    if (k + 4 > h.length) {
+      h = crypto.createHash("sha256").update(h).digest();
+      k = 0;
+    }
+    const v = h.readUInt32BE(k);
+    k += 4;
+    return v / 0x100000000;
+  };
+  const order = Array.from({ length: n }, (_, i) => i);
+  for (let i = n - 1; i > 0; i--) {
+    const j = Math.floor(next() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  return order;
+}
+
+/** Shown position -> original option index, or null when this item must not be shuffled. */
+function mcqOrderFor(assessmentId: string, studentId: string, task: any, itemIndex: number): number[] | null {
+  if (!task || task.type !== "mcq" || !Array.isArray(task.questions)) return null;
+  const item = task.questions[itemIndex];
+  const options: any[] = item && Array.isArray(item.options) ? item.options : [];
+  if (options.length < 3) return null; // e.g. True/False, Yes/No
+  // Tick tables (every row has the same column headings): keep the columns in place
+  if (task.questions.length > 1) {
+    const first = JSON.stringify(task.questions[0]?.options || []);
+    if (task.questions.every((q: any) => JSON.stringify(q?.options || []) === first)) return null;
+  }
+  // Options that refer to other options ("All of the above", "Both A and B") must stay in place
+  if (options.some((o) => /\b(all|none|both|neither) of (the )?(above|these)\b|\bboth [a-d] and [a-d]\b|^\s*[a-d]\s*(and|&)\s*[a-d]\s*$/i.test(String(o)))) return null;
+  const order = seededOrder(`${assessmentId}:${studentId}:${task.id}:${itemIndex}`, options.length);
+  return order.every((v, i) => v === i) ? null : order;
+}
+
+function shuffleTaskForStudent(task: any, assessmentId: string, studentId: string): any {
+  if (!task || task.type !== "mcq" || !Array.isArray(task.questions)) return task;
+  return {
+    ...task,
+    questions: task.questions.map((q: any, i: number) => {
+      const order = mcqOrderFor(assessmentId, studentId, task, i);
+      if (!order || !q || !Array.isArray(q.options)) return q;
+      return { ...q, options: order.map((orig) => q.options[orig]) };
+    }),
+  };
+}
+
+/** Converts one answer between the student's order and the original order. */
+function convertMcqAnswer(task: any, assessmentId: string, studentId: string, answer: any, toOriginal: boolean): any {
+  if (!task || task.type !== "mcq" || !Array.isArray(task.questions)) return answer;
+  const arr = Array.isArray(answer) ? answer : answer !== null && answer !== undefined ? [answer] : null;
+  if (!arr) return answer;
+  const out = arr.map((given: any, i: number) => {
+    const order = mcqOrderFor(assessmentId, studentId, task, i);
+    if (!order || given === null || given === undefined || given === "") return given;
+    const n = Number(given);
+    if (!Number.isInteger(n) || n < 0 || n >= order.length) return given;
+    const converted = toOriginal ? order[n] : order.indexOf(n);
+    return typeof given === "string" ? String(converted) : converted;
+  });
+  return Array.isArray(answer) ? out : out[0];
+}
+
+function convertAnswersMap(a: AssessmentStore, studentId: string, answers: any, toOriginal: boolean): any {
+  if (!answers || typeof answers !== "object") return answers;
+  const questions: any[] = (enrichAssessment(a).questions || []) as any[];
+  const byId: Record<string, any> = {};
+  for (const q of questions) if (q && q.id) byId[q.id] = q;
+  const out: Record<string, any> = { ...answers };
+  for (const [qid, v] of Object.entries(answers)) {
+    if (byId[qid]) out[qid] = convertMcqAnswer(byId[qid], a.id, studentId, v, toOriginal);
+  }
+  return out;
+}
+
+function studentViewOfSession(a: AssessmentStore, s: any): any {
+  if (!s) return s;
+  return { ...s, answers: convertAnswersMap(a, s.studentId, s.answers || {}, false) };
+}
+
+function sanitizeAssessmentForStudent(a: AssessmentStore, studentId?: string) {
   if (!a) return a;
   const safe = {
     id: a.id,
@@ -1085,7 +1170,10 @@ function sanitizeAssessmentForStudent(a: AssessmentStore) {
     gradeBoundaries: a.gradeBoundaries,
     createdAt: a.createdAt,
     status: a.status,
-    questions: (a.questions || []).map((q: any) => sanitizeTaskForStudent(q, a.type === "task")),
+    questions: (a.questions || []).map((q: any) => {
+      const clean = sanitizeTaskForStudent(q, a.type === "task");
+      return studentId ? shuffleTaskForStudent(clean, a.id, studentId) : clean;
+    }),
   };
   return safe;
 }
@@ -1481,7 +1569,7 @@ ${preferredUnit ? `Note: Preferred unit: "${preferredUnit}".` : ""}
     "starter": Python starter template,
     "solution": Complete working reference Python 3 code,
     "tests": Array of test cases: [ { "in": string[] (stdin lines), "out": string (exact stdout expected), "m": number (marks) } ]. Total test marks MUST equal "marks".
-- "mcq": Multiple choice. Must provide "questions": [ { "q": string, "options": string[], "a": number (0-based correct index) } ].
+- "mcq": Multiple choice. Must provide "questions": [ { "q": string, "options": string[], "a": number (0-based correct index) } ]. Write the wrong options as believable mistakes of the same length, detail and style as the correct one, so the correct option never stands out by being the longest or most detailed, and put the correct option at a random position.
 - "table": Trace table or classification grid. Must provide "columns": [ { "label": string, "type"?: "text"|"select", "options"?: string[] } ], and "rows": [ [ { "v": string, "g": boolean } ] ] where g:true is given/fixed, g:false is student input.
 - "inspect": Code comprehension with numbered code snippet. Must provide "code": string, and "questions": [ { "q": string, "a": string[] (all accepted variations), "why"?: string } ].
 - "theory": Free text answer. Must provide "questions": [ { "q": string, "keywords": string[], "maxMarks": number, "criteria": string[] } ].
@@ -2486,7 +2574,7 @@ Execute a high-fidelity, end-to-end Past Paper Ingestion Pipeline:
        "markScheme": full text from mark scheme,
        "markPoints": individual MarkPoint criteria list.
    - "mcq" (Multiple choice):
-       "questions": [ { "q": string, "options": string[], "a": number (0-based index) } ]
+       "questions": [ { "q": string, "options": string[], "a": number (0-based index) } ] (wrong options must be as long and as detailed as the correct one; correct option at a random position)
    - "table" (Trace tables, truth tables):
        "columns": [ { "label": string, "type": "text" } ],
        "rows": [ [ { "v": string, "g": boolean } ] ] (g:true for given, g:false for student input)
@@ -4771,7 +4859,7 @@ app.get("/api/assessments/:id", (req, res) => {
       if (isTeacherRequest(req)) {
         res.json({ assessment: enriched });
       } else {
-        res.json({ assessment: sanitizeAssessmentForStudent(enriched) });
+        res.json({ assessment: sanitizeAssessmentForStudent(enriched, String(req.query.sid || "") || undefined) });
       }
       return;
     }
@@ -4782,7 +4870,7 @@ app.get("/api/assessments/:id", (req, res) => {
   if (isTeacherRequest(req)) {
     res.json({ assessment: enriched });
   } else {
-    res.json({ assessment: sanitizeAssessmentForStudent(enriched) });
+    res.json({ assessment: sanitizeAssessmentForStudent(enriched, String(req.query.sid || "") || undefined) });
   }
 });
 
@@ -4853,7 +4941,11 @@ app.post("/api/assessments/:id/join", (req, res) => {
   savePersistedAssessments();
 
   const enriched = enrichAssessment(a);
-  res.json({ success: true, assessment: sanitizeAssessmentForStudent(enriched), studentSession: session });
+  res.json({
+    success: true,
+    assessment: sanitizeAssessmentForStudent(enriched, session.studentId),
+    studentSession: studentViewOfSession(a, session),
+  });
 });
 
 // Student updates live progress
@@ -4876,7 +4968,7 @@ app.post("/api/assessments/:id/progress", (req, res) => {
   }
   if (currentQuestionIndex !== undefined) s.currentQuestionIndex = currentQuestionIndex;
   if (answeredQuestions) s.answeredQuestions = answeredQuestions;
-  if (answers) s.answers = { ...s.answers, ...answers };
+  if (answers) s.answers = { ...s.answers, ...convertAnswersMap(a, studentId, answers, true) };
   s.lastActiveAt = Date.now();
   if (s.status === "joined") s.status = "in_progress";
 
@@ -4932,7 +5024,7 @@ app.post("/api/assessments/:id/check", async (req, res) => {
     return;
   }
 
-  const result = await autoMarkTaskOnServer(q, answer);
+  const result = await autoMarkTaskOnServer(q, convertMcqAnswer(q, a.id, studentId, answer, true));
   s.answerChecks = { ...(s.answerChecks || {}), [questionId]: used + 1 };
   s.lastActiveAt = Date.now();
   savePersistedAssessments();
@@ -5016,7 +5108,8 @@ app.post("/api/assessments/:id/submit", async (req, res) => {
     v === undefined || v === null || (typeof v === "string" && !v.trim()) || (Array.isArray(v) && v.length === 0);
   const mergedAnswers: Record<string, any> = { ...(s.answers || {}) };
   if (answers && typeof answers === "object") {
-    for (const [qid, v] of Object.entries(answers)) {
+    const originalOrder = convertAnswersMap(a, studentId, answers, true);
+    for (const [qid, v] of Object.entries(originalOrder)) {
       if (!isEmptyAnswer(v) || mergedAnswers[qid] === undefined) mergedAnswers[qid] = v;
     }
   }

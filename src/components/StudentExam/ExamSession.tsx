@@ -86,7 +86,8 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
   useEffect(() => {
     const syncAssessment = async () => {
       try {
-        const res = await fetch(`/api/assessments/${liveAssessment.id}`);
+        // sid: keeps this student's own order of multiple-choice options
+        const res = await fetch(`/api/assessments/${liveAssessment.id}?sid=${encodeURIComponent(studentSession.studentId)}`);
         if (res.ok) {
           const data = await res.json();
           if (data.assessment) {
