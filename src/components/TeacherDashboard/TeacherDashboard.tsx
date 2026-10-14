@@ -155,6 +155,44 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     return () => unsubscribe();
   }, []);
 
+  // One-time move from the old database (only shown until it has been done)
+  const [migrationAvailable, setMigrationAvailable] = useState(false);
+  const [copyingDatabase, setCopyingDatabase] = useState(false);
+  useEffect(() => {
+    teacherFetch("/api/admin/migration-status")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setMigrationAvailable(Boolean(d && d.available)))
+      .catch(() => {});
+  }, []);
+  const handleCopyPreviousDatabase = async () => {
+    if (
+      !window.confirm(
+        "Copy all assessments, questions, student results and teacher accounts from the old database into the new one?\n\nDo this once, before anyone uses the app. It can take a minute - keep this page open."
+      )
+    )
+      return;
+    setCopyingDatabase(true);
+    try {
+      const res = await teacherFetch("/api/admin/copy-previous-database", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const c = data.copied || {};
+        window.alert(
+          `Done! Copied:\n- ${c.assessments || 0} assessments\n- ${c.students || 0} student attempts\n- ${c.custom_questions || 0} questions\n- ${c.teachers || 0} teacher accounts\n\nThe page will now reload.`
+        );
+        setMigrationAvailable(false);
+        window.location.reload();
+      } else {
+        window.alert(data.error || "The copy did not work. Please try again.");
+        if (res.status === 409) setMigrationAvailable(false);
+      }
+    } catch {
+      window.alert("Could not reach the server. Please try again.");
+    } finally {
+      setCopyingDatabase(false);
+    }
+  };
+
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const handleDuplicate = async (a: Assessment) => {
     const suggested = `${a.title} (${me?.name || "my copy"})`;
@@ -456,6 +494,17 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             <KeyRound className="w-3.5 h-3.5 text-purple-600" />
             <span className="hidden sm:inline">Change Passcode</span>
           </button>
+
+          {migrationAvailable && (
+            <button
+              onClick={handleCopyPreviousDatabase}
+              disabled={copyingDatabase}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100 text-xs font-bold transition-colors disabled:opacity-50"
+              title="One-time copy of all assessments, questions, results and teacher accounts from the old database"
+            >
+              {copyingDatabase ? "Copying data… (do not close)" : "Copy data from old database"}
+            </button>
+          )}
 
           {me?.name && (
             <span className="hidden md:inline text-xs text-slate-500" title="The teacher account you are signed in with">

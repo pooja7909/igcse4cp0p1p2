@@ -219,6 +219,7 @@ export interface ReflectionSheetData {
 }
 
 export interface StudentSession {
+  questionComments?: Record<string, string>; // teacher comment per question
   studentId: string;
   name: string;
   candidateNumber?: string;

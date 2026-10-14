@@ -17,6 +17,10 @@ import {
   saveUploadChunk,
   readUpload,
   deleteUpload,
+  copyFromPreviousDatabase,
+  getMigrationMarker,
+  setMigrationMarker,
+  hasPreviousDatabase,
 } from "./serverStore.js";
 
 dotenv.config();
@@ -115,6 +119,7 @@ app.use("/api", async (req, res, next) => {
 // In-memory & file-backed persistent data store for live exams & teacher dashboard
 interface LiveStudentSession {
   studentId: string;
+  questionComments?: Record<string, string>; // teacher comment per question (shown with results)
   answerChecks?: Record<string, number>; // "Check answer" uses per question
   name: string;
   candidateNumber: string;
@@ -5007,6 +5012,167 @@ app.post("/api/assessments/:id/submit", async (req, res) => {
   }
 });
 
+// ---------- One-time move of all data from the previous database ----------
+const MIGRATED_COLLECTIONS = ["assessments", "students", "custom_questions", "teachers", "settings", "data_files"];
+
+app.get("/api/admin/migration-status", requireTeacher, async (_req, res) => {
+  try {
+    if (!isSharedStoreEnabled() || !hasPreviousDatabase()) {
+      res.json({ available: false });
+      return;
+    }
+    const marker = await getMigrationMarker();
+    res.json({ available: !marker, copiedAt: marker?.at || null, copied: marker?.copied || null });
+  } catch (err: any) {
+    res.json({ available: false, error: err?.message || String(err) });
+  }
+});
+
+app.post("/api/admin/copy-previous-database", requireTeacher, async (_req, res) => {
+  try {
+    if (!isSharedStoreEnabled()) {
+      res.status(400).json({ error: "The shared database is not in use on this server." });
+      return;
+    }
+    const marker = await getMigrationMarker();
+    if (marker) {
+      res.status(409).json({ error: "The data was already copied on " + new Date(marker.at).toLocaleString() + ". It is not copied twice, so newer work is never replaced." });
+      return;
+    }
+    const result = await copyFromPreviousDatabase(MIGRATED_COLLECTIONS);
+    await setMigrationMarker({ at: Date.now(), copied: result.copied, source: result.source });
+    await pullSharedState("all"); // load the copied data into this server copy straight away
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    console.error("[migration] Copy failed:", err);
+    res.status(500).json({ error: "Copy failed: " + explainDatabaseError(err) + " Nothing was lost - you can try again." });
+  }
+});
+
+// ---------- Comment per question: what went wrong and how to improve ----------
+function answerAsText(answer: any): string {
+  if (answer === undefined || answer === null) return "";
+  if (typeof answer === "string") return answer;
+  try {
+    return JSON.stringify(answer);
+  } catch {
+    return String(answer);
+  }
+}
+
+async function suggestQuestionComment(task: any, answer: any, awarded: number, maxMarks: number, note: string): Promise<string> {
+  const answerText = answerAsText(answer).trim();
+  const fallback = () => {
+    if (!answerText) return "You did not answer this question. Read the question carefully and attempt every part - even a partial answer can earn marks.";
+    const cleanNote = String(note || "").replace(/\s*\(Anti-Hardcoding Shield active\)/gi, "").replace(/\s+/g, " ").trim();
+    const why = cleanNote ? `What went wrong: ${cleanNote.slice(0, 400)}` : "Some of the required points are missing.";
+    return `${why} How to improve: compare your answer with the mark scheme points and make sure each required step or idea is clearly included.`;
+  };
+  const ai = getGeminiClient();
+  if (!ai) return fallback();
+
+  // For programs, run the tests so the comment can name the exact problem
+  let testInfo = "";
+  if (task.type === "code" && answerText && Array.isArray(task.tests) && task.tests.length) {
+    try {
+      const results = await runPythonTests(answerText, task.tests.map((t: any) => t.in || []), getFilesForTask(task));
+      if (results) {
+        testInfo = task.tests
+          .slice(0, 6)
+          .map((t: any, i: number) => {
+            const r = results[i] || { out: "", err: null };
+            const ok = !r.err && compareOutputs(r.out || "", String(t.out ?? ""));
+            return `Test ${i + 1}: inputs ${JSON.stringify(t.in || [])}\nExpected: ${String(t.out ?? "").slice(0, 300)}\nStudent output: ${String(r.out || "").slice(0, 300)}${r.err ? `\nError: ${String(r.err).slice(0, 300)}` : ""}\nResult: ${ok ? "PASS" : "FAIL"}`;
+          })
+          .join("\n\n");
+      }
+    } catch {}
+  }
+
+  const ms = collectMarkScheme(task);
+  const prompt = `You are a supportive, precise IGCSE Computer Science teacher writing feedback to a student about ONE question on which they lost marks.
+
+QUESTION:
+${describeQuestion(task).slice(0, 4000)}
+
+MARK SCHEME / EXPECTED ANSWER:
+${(ms.text || "").slice(0, 3000)}
+${ms.markPoints.length ? JSON.stringify(ms.markPoints).slice(0, 2000) : ""}
+${task.solution ? "MODEL SOLUTION:\n" + String(task.solution).slice(0, 2500) : ""}
+
+STUDENT'S ANSWER:
+${answerText.slice(0, 4000) || "(no answer)"}
+
+MARKS: ${awarded} out of ${maxMarks}
+AUTOMATIC MARKING NOTE: ${(note || "").slice(0, 800)}
+${testInfo ? "TEST RESULTS:\n" + testInfo : ""}
+
+Write a comment addressed to the student ("you"), 2-4 short sentences, plain English, no headings, no mark numbers:
+1. What went wrong - specific to THIS student's answer (e.g. the exact line, missing check, wrong output, missing point).
+2. How to improve - one or two concrete actions.
+Do not give away a complete model answer.
+
+Return JSON: {"comment": "..."}`;
+  try {
+    const response = await generateContentWithResilience(ai, {
+      contents: prompt,
+      config: { responseMimeType: "application/json" },
+      maxWaitMs: 45_000,
+      perCallTimeoutMs: 30_000,
+    });
+    const parsed = JSON.parse(response.text?.trim() || "{}");
+    const c = String(parsed.comment || "").trim();
+    return c || fallback();
+  } catch (err) {
+    console.warn("[comments] AI suggestion failed:", (err as any)?.message || err);
+    return fallback();
+  }
+}
+
+// Suggest comments for the questions where a student lost marks (optionally save them)
+app.post("/api/assessments/:id/suggest-comments", requireTeacher, async (req, res) => {
+  let a = assessmentsDb[req.params.id];
+  if (!a) a = Object.values(assessmentsDb).find((x) => x.code === req.params.id.toUpperCase()) as AssessmentStore;
+  const { studentId, questionIds, save, overwrite } = req.body || {};
+  if (!a || !a.students || !a.students[studentId]) {
+    res.status(404).json({ error: "Student not found" });
+    return;
+  }
+  const s = a.students[studentId];
+  const enriched = enrichAssessment(a);
+  const questions: any[] = enriched.questions || [];
+  const wanted = Array.isArray(questionIds) && questionIds.length ? new Set(questionIds.map(String)) : null;
+  const targets = questions.filter((q) => {
+    if (!q || !q.id) return false;
+    if (wanted) return wanted.has(q.id);
+    const max = Number(q.marks) || 0;
+    const got = Number((s.marks || {})[q.id] ?? 0);
+    return max > 0 && got < max; // only questions that lost marks
+  });
+
+  const comments: Record<string, string> = {};
+  const started = Date.now();
+  let i = 0;
+  const worker = async () => {
+    while (i < targets.length && Date.now() - started < 200_000) {
+      const q = targets[i++];
+      const max = Number(q.marks) || 0;
+      const got = Number((s.marks || {})[q.id] ?? 0);
+      comments[q.id] = await suggestQuestionComment(q, (s.answers || {})[q.id], got, max, (s.markingNotes || {})[q.id] || "");
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(3, targets.length) }, worker));
+
+  if (save) {
+    s.questionComments = { ...(s.questionComments || {}) };
+    for (const [qid, text] of Object.entries(comments)) {
+      if (overwrite || !s.questionComments[qid]) s.questionComments[qid] = text;
+    }
+    savePersistedAssessments();
+  }
+  res.json({ success: true, comments, studentSession: s, skipped: targets.length - Object.keys(comments).length });
+});
+
 // Teacher removes one student's attempt (e.g. joined twice, wrong name, or to let them start again)
 app.delete("/api/assessments/:id/students/:studentId", requireTeacher, (req, res) => {
   let a = assessmentsDb[req.params.id];
@@ -5092,7 +5258,7 @@ app.get("/api/assessments/:id/live", requireTeacher, (req, res) => {
 
 // Teacher manual override / feedback (Protected with requireTeacher)
 app.post("/api/assessments/:id/override-mark", requireTeacher, (req, res) => {
-  const { studentId, questionId, mark, feedback } = req.body;
+  const { studentId, questionId, mark, feedback, questionComment } = req.body;
   const a = assessmentsDb[req.params.id];
   if (!a || !a.students[studentId]) {
     res.status(404).json({ error: "Session not found" });
@@ -5107,6 +5273,12 @@ app.post("/api/assessments/:id/override-mark", requireTeacher, (req, res) => {
   }
   if (feedback !== undefined) {
     s.feedback = feedback;
+  }
+  if (questionId && questionComment !== undefined) {
+    const text = String(questionComment || "").trim().slice(0, 4000);
+    s.questionComments = { ...(s.questionComments || {}) };
+    if (text) s.questionComments[questionId] = text;
+    else delete s.questionComments[questionId];
   }
 
   savePersistedAssessments();
@@ -5432,6 +5604,7 @@ function buildStudentResultPayload(a: AssessmentStore, s: LiveStudentSession) {
 
   if (releaseSettings.shareTeacherFeedback) {
     studentData.feedback = s.feedback;
+    studentData.questionComments = s.questionComments;
     studentData.aiDiagnostic = s.aiDiagnostic;
   }
 

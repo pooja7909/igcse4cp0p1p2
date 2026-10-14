@@ -393,6 +393,19 @@ export const StudentResultPortal: React.FC<StudentResultPortalProps> = ({
                               </div>
                             )}
 
+                            {/* Teacher's comment on this question */}
+                            {releaseSettings?.shareTeacherFeedback !== false &&
+                              (studentData as any)?.questionComments?.[q.id] && (
+                                <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 space-y-1">
+                                  <span className="font-bold text-amber-900 block uppercase tracking-wider text-[10px]">
+                                    Your teacher's comment on this question:
+                                  </span>
+                                  <p className="text-amber-950 leading-relaxed whitespace-pre-line text-xs">
+                                    {(studentData as any).questionComments[q.id]}
+                                  </p>
+                                </div>
+                              )}
+
                             {/* Official Mark Scheme & Guidance (Only if teacher allowed shareSolutions and releaseSettings) */}
                             {assessment.shareSolutions === false ? (
                               <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-slate-600 text-xs flex items-center gap-2">

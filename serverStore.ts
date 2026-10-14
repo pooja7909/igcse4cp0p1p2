@@ -50,14 +50,20 @@ function chunkString(s: string, size: number): string[] {
   return out.length ? out : [""];
 }
 
-async function createAdapter(): Promise<Adapter> {
-  const fileCfg = loadFirebaseConfig();
-  const projectId = process.env.FIREBASE_PROJECT_ID || fileCfg.projectId;
-  const databaseId = process.env.FIRESTORE_DATABASE_ID || fileCfg.firestoreDatabaseId || "(default)";
+async function createAdapter(
+  source?: { cfg: any; testDir?: string; appName: string }
+): Promise<Adapter> {
+  // `source` = connect to another database (the previous one) with its web settings
+  const fileCfg = source ? source.cfg : loadFirebaseConfig();
+  const projectId = source ? fileCfg.projectId : process.env.FIREBASE_PROJECT_ID || fileCfg.projectId;
+  const databaseId = source
+    ? fileCfg.firestoreDatabaseId || "(default)"
+    : process.env.FIRESTORE_DATABASE_ID || fileCfg.firestoreDatabaseId || "(default)";
+  const testDir = source ? source.testDir : process.env.STORE_TEST_DIR;
 
   // ---------- Test mode: shared local folder (simulates Firestore for local testing) ----------
-  if (process.env.STORE_TEST_DIR) {
-    const dir = process.env.STORE_TEST_DIR;
+  if (testDir) {
+    const dir = testDir;
     // Test-only operation counter (reads are billed per document, min 1 per query)
     const opsFile = path.join(dir, "ops-" + process.pid + ".json");
     const ops: any = { reads: 0, writes: 0, by: {} };
@@ -121,7 +127,7 @@ async function createAdapter(): Promise<Adapter> {
   }
 
   // ---------- Mode 1: firebase-admin ----------
-  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT && !source) {
     const { initializeApp, getApps, cert } = await import("firebase-admin/app");
     const { getFirestore } = await import("firebase-admin/firestore");
     const sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -175,7 +181,9 @@ async function createAdapter(): Promise<Adapter> {
   const { initializeApp, getApps } = await import("firebase/app");
   const fsSdk = await import("firebase/firestore");
   const cfg = { ...fileCfg, projectId };
-  const app = getApps().find((a) => a.name === "edexcel-server") || initializeApp(cfg, "edexcel-server");
+  delete (cfg as any).previousDatabase;
+  const appName = source ? source.appName : "edexcel-server";
+  const app = getApps().find((a) => a.name === appName) || initializeApp(cfg, appName);
   const db = databaseId && databaseId !== "(default)" ? fsSdk.getFirestore(app, databaseId) : fsSdk.getFirestore(app);
 
   return {
@@ -276,6 +284,51 @@ function adapter(): Promise<Adapter> {
     });
   }
   return adapterPromise;
+}
+
+/**
+ * One-time move from the previous database (set as "previousDatabase" in
+ * firebase-applet-config.json) into the current one. Copies every record of the given
+ * collections; copied records get a fresh save time so every server copy picks them up.
+ */
+export async function copyFromPreviousDatabase(collections: string[]): Promise<{ copied: Record<string, number>; source: string }> {
+  const fileCfg = loadFirebaseConfig();
+  const prev = fileCfg.previousDatabase;
+  if (!prev || !prev.projectId) throw new Error("No previous database is set in firebase-applet-config.json.");
+  const prevDbId = prev.firestoreDatabaseId || "(default)";
+  const curProject = process.env.FIREBASE_PROJECT_ID || fileCfg.projectId;
+  const curDb = process.env.FIRESTORE_DATABASE_ID || fileCfg.firestoreDatabaseId || "(default)";
+  if (prev.projectId === curProject && prevDbId === curDb) {
+    throw new Error("The previous database is the same as the current one - nothing to copy.");
+  }
+  const from = await createAdapter({ cfg: prev, testDir: process.env.STORE_TEST_PREVIOUS_DIR, appName: "edexcel-previous" });
+  const target = await adapter();
+  const copied: Record<string, number> = {};
+  const now = Date.now();
+  for (const col of collections) {
+    const docs = (await from.readSince(col, 0))
+      .filter((d) => d.json !== null) // deleted records are not copied
+      .map((d) => ({ id: d.id, json: d.json, updatedAt: now }));
+    if (docs.length) await target.writeMany(col, docs);
+    copied[col] = docs.length;
+  }
+  return { copied, source: `${prev.projectId} / ${prevDbId}` };
+}
+
+export async function getMigrationMarker(): Promise<any | null> {
+  if (!isSharedStoreEnabled()) return null;
+  const a = await adapter();
+  return a.getRaw("migration", "copied_from_previous");
+}
+
+export async function setMigrationMarker(data: any): Promise<void> {
+  const a = await adapter();
+  await a.setRaw("migration", "copied_from_previous", data);
+}
+
+export function hasPreviousDatabase(): boolean {
+  const cfg = loadFirebaseConfig();
+  return !!(cfg.previousDatabase && cfg.previousDatabase.projectId);
 }
 
 export function isSharedStoreEnabled(): boolean {

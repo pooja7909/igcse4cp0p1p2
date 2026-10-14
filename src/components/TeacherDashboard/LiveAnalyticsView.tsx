@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { Assessment, StudentSession, LiveAssessmentStats, IGCSETask } from "../../types";
 import { PythonSnippetViewer } from "../PythonSnippetViewer";
+import { QuestionFilesPanel } from "../QuestionFilesPanel";
+import { TeacherPythonRunner } from "./TeacherPythonRunner";
 import { teacherFetch } from "../../utils/teacherAuth";
 import { StudentReflectionSheet } from "../StudentExam/StudentReflectionSheet";
 import { ReleaseResultsModal } from "./ReleaseResultsModal";
@@ -268,6 +270,112 @@ export const LiveAnalyticsView: React.FC<LiveAnalyticsViewProps> = ({
     }, 50);
     return () => clearTimeout(t);
   }, [selectedQId]);
+
+  // ---------- Comment per question ----------
+  const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
+  const [commentBusy, setCommentBusy] = useState<Record<string, "suggest" | "save" | undefined>>({});
+  const [commentMsg, setCommentMsg] = useState<Record<string, { ok: boolean; text: string } | undefined>>({});
+  const [bulkCommentBusy, setBulkCommentBusy] = useState(false);
+  const [bulkCommentMsg, setBulkCommentMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [openRunners, setOpenRunners] = useState<Record<string, boolean>>({});
+  const currentStudentId = selectedStudent?.studentId;
+  useEffect(() => {
+    // New student opened: start with their saved comments
+    setCommentDrafts({});
+    setCommentMsg({});
+    setBulkCommentMsg(null);
+    setOpenRunners({});
+  }, [currentStudentId]);
+
+  const applyStudentUpdate = (st: any) => {
+    if (!st) return;
+    setSelectedStudent(st);
+    setStudents((prev) => prev.map((x) => (x.studentId === st.studentId ? st : x)));
+  };
+
+  const suggestComment = async (qId: string) => {
+    if (!selectedStudent) return;
+    setCommentBusy((b) => ({ ...b, [qId]: "suggest" }));
+    setCommentMsg((m) => ({ ...m, [qId]: undefined }));
+    try {
+      const res = await teacherFetch(`/api/assessments/${assessment.id}/suggest-comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ studentId: selectedStudent.studentId, questionIds: [qId] }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.comments && data.comments[qId]) {
+        setCommentDrafts((d) => ({ ...d, [qId]: data.comments[qId] }));
+        setCommentMsg((m) => ({ ...m, [qId]: { ok: true, text: "Suggestion added - edit it if you like, then press Save comment." } }));
+      } else {
+        setCommentMsg((m) => ({ ...m, [qId]: { ok: false, text: data.error || "Could not write a suggestion. Please try again." } }));
+      }
+    } catch {
+      setCommentMsg((m) => ({ ...m, [qId]: { ok: false, text: "Could not reach the server. Please try again." } }));
+    } finally {
+      setCommentBusy((b) => ({ ...b, [qId]: undefined }));
+    }
+  };
+
+  const saveComment = async (qId: string) => {
+    if (!selectedStudent) return;
+    const text = commentDrafts[qId] ?? ((selectedStudent as any).questionComments || {})[qId] ?? "";
+    setCommentBusy((b) => ({ ...b, [qId]: "save" }));
+    try {
+      const res = await teacherFetch(`/api/assessments/${assessment.id}/override-mark`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ studentId: selectedStudent.studentId, questionId: qId, questionComment: text }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.studentSession) {
+        applyStudentUpdate(data.studentSession);
+        setCommentDrafts((d) => {
+          const n = { ...d };
+          delete n[qId];
+          return n;
+        });
+        setCommentMsg((m) => ({ ...m, [qId]: { ok: true, text: text.trim() ? "✓ Comment saved" : "✓ Comment removed" } }));
+      } else {
+        setCommentMsg((m) => ({ ...m, [qId]: { ok: false, text: "Not saved: " + (data.error || `server error ${res.status}`) } }));
+      }
+    } catch {
+      setCommentMsg((m) => ({ ...m, [qId]: { ok: false, text: "Not saved: could not reach the server." } }));
+    } finally {
+      setCommentBusy((b) => ({ ...b, [qId]: undefined }));
+    }
+  };
+
+  const writeAllComments = async () => {
+    if (!selectedStudent) return;
+    setBulkCommentBusy(true);
+    setBulkCommentMsg(null);
+    try {
+      const res = await teacherFetch(`/api/assessments/${assessment.id}/suggest-comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ studentId: selectedStudent.studentId, save: true }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        applyStudentUpdate(data.studentSession);
+        setCommentDrafts({});
+        const n = Object.keys(data.comments || {}).length;
+        setBulkCommentMsg({
+          ok: true,
+          text: n
+            ? `✓ Wrote comments for ${n} question${n === 1 ? "" : "s"} that lost marks (comments you had already written were kept). Check and edit them below.`
+            : "This student did not lose marks on any question - nothing to comment on.",
+        });
+      } else {
+        setBulkCommentMsg({ ok: false, text: data.error || "Could not write the comments. Please try again." });
+      }
+    } catch {
+      setBulkCommentMsg({ ok: false, text: "Could not reach the server. Please try again." });
+    } finally {
+      setBulkCommentBusy(false);
+    }
+  };
 
   const [quickMarkMsg, setQuickMarkMsg] = useState<{ qId: string; ok: boolean; text: string } | null>(null);
   const handleQuickMark = async (qId: string, markValue: number) => {
@@ -1013,6 +1121,14 @@ ${diag.questionBreakdowns
                     {isRegrading ? "Re-evaluating..." : "Re-evaluate Answers"}
                   </button>
                   <button
+                    onClick={writeAllComments}
+                    disabled={bulkCommentBusy}
+                    className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold shadow-sm transition-all disabled:opacity-50"
+                    title="Write a comment for every question where this student lost marks: what went wrong and how to improve"
+                  >
+                    {bulkCommentBusy ? "Writing comments... (about 20s)" : "✨ Comment on questions that lost marks"}
+                  </button>
+                  <button
                     onClick={handleRemoveStudent}
                     disabled={isRemoving}
                     className="px-3 py-1.5 rounded-lg border border-red-300 bg-white hover:bg-red-50 text-red-700 text-xs font-bold shadow-sm transition-all disabled:opacity-50"
@@ -1022,6 +1138,16 @@ ${diag.questionBreakdowns
                   </button>
                 </div>
               </div>
+
+              {bulkCommentMsg && (
+                <div
+                  className={`mb-3 px-3 py-2 rounded-lg text-xs font-semibold border ${
+                    bulkCommentMsg.ok ? "bg-emerald-50 border-emerald-200 text-emerald-800" : "bg-red-50 border-red-200 text-red-800"
+                  }`}
+                >
+                  {bulkCommentMsg.text}
+                </div>
+              )}
 
               {/* Question-by-Question Breakdown */}
               <div className="space-y-5">
@@ -1111,6 +1237,14 @@ ${diag.questionBreakdowns
                           </span>
                           <p className="whitespace-pre-line leading-relaxed font-sans">{task.brief}</p>
                         </div>
+                      )}
+
+                      {task && (
+                        <QuestionFilesPanel
+                          task={task}
+                          extraText={typeof answer === "string" ? answer : ""}
+                          defaultOpen={false}
+                        />
                       )}
 
                       {/* Official Mark Scheme & Model Solution Panel (when expanded) */}
@@ -1282,7 +1416,17 @@ ${diag.questionBreakdowns
 
                         {task?.type === "code" ? (
                           typeof answer === "string" && answer.trim().length > 0 ? (
-                            <PythonSnippetViewer code={answer} title="Student Python Submission" />
+                            <div className="space-y-2">
+                              <PythonSnippetViewer code={answer} title="Student Python Submission" />
+                              <button
+                                type="button"
+                                onClick={() => setOpenRunners((o) => ({ ...o, [qId]: !o[qId] }))}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-emerald-400 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold"
+                              >
+                                {openRunners[qId] ? "Hide Python runner" : "▶ Run this code in Python"}
+                              </button>
+                              {openRunners[qId] && <TeacherPythonRunner task={task} studentCode={answer} />}
+                            </div>
                           ) : (
                             <div className="p-3 bg-rose-50/70 border border-rose-200 text-rose-800 text-xs italic rounded-xl flex items-center justify-between">
                               <span>(No Python code submitted)</span>
@@ -1437,6 +1581,58 @@ ${diag.questionBreakdowns
                           <Edit3 className="w-3.5 h-3.5" /> Adjust Mark & Comment
                         </button>
                       </div>
+
+                      {(() => {
+                        const saved = ((selectedStudent as any).questionComments || {})[qId] as string | undefined;
+                        const lostMarks = (awarded ?? 0) < (maxM ?? 0);
+                        if (!lostMarks && !saved && commentDrafts[qId] === undefined) return null;
+                        const value = commentDrafts[qId] ?? saved ?? "";
+                        const busy = commentBusy[qId];
+                        const msg = commentMsg[qId];
+                        return (
+                          <div className="p-3 rounded-xl border border-amber-200 bg-amber-50/60 space-y-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="text-xs font-bold text-amber-900">
+                                Comment for this question (what went wrong & how to improve)
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => suggestComment(qId)}
+                                disabled={!!busy}
+                                className="px-2.5 py-1 rounded-lg border border-purple-300 bg-white hover:bg-purple-50 text-purple-800 text-[11px] font-bold disabled:opacity-50"
+                              >
+                                {busy === "suggest" ? "Writing..." : value ? "✨ Suggest again" : "✨ Suggest a comment"}
+                              </button>
+                            </div>
+                            <textarea
+                              value={value}
+                              onChange={(e) => setCommentDrafts((d) => ({ ...d, [qId]: e.target.value }))}
+                              rows={3}
+                              placeholder="e.g. Your loop stops one item early, so the last score is not added. Use range(len(scores)) or loop over the list directly."
+                              className="w-full p-2 text-xs border border-amber-200 rounded-lg bg-white"
+                            />
+                            <div className="flex flex-wrap items-center gap-3">
+                              <button
+                                type="button"
+                                onClick={() => saveComment(qId)}
+                                disabled={!!busy || (commentDrafts[qId] === undefined && !!saved)}
+                                className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold disabled:opacity-50"
+                              >
+                                {busy === "save" ? "Saving..." : "Save comment"}
+                              </button>
+                              {saved && commentDrafts[qId] === undefined && !msg && (
+                                <span className="text-[11px] text-emerald-700 font-semibold">✓ Saved - students see it when you release results</span>
+                              )}
+                              {commentDrafts[qId] !== undefined && commentDrafts[qId] !== (saved ?? "") && !busy && (
+                                <span className="text-[11px] text-amber-800 font-semibold">Not saved yet</span>
+                              )}
+                              {msg && (
+                                <span className={`text-[11px] font-semibold ${msg.ok ? "text-emerald-700" : "text-red-700"}`}>{msg.text}</span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
 
                       {selectedQId === qId && (
                         <div

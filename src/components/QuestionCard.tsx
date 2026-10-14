@@ -3,6 +3,7 @@ import { IGCSETask, MarkResult } from "../types";
 import { autoMarkTask } from "../utils/autoMarker";
 import { runPython } from "../utils/pythonRunner";
 import { PythonCodeEditor } from "./PythonCodeEditor";
+import { QuestionFilesPanel } from "./QuestionFilesPanel";
 import { PythonSnippetViewer } from "./PythonSnippetViewer";
 import { AiPracticeScaffoldPanel } from "./StudentExam/AiPracticeScaffoldPanel";
 import {
@@ -203,6 +204,9 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
           isAssessment={hideAiScaffold}
         />
       )}
+
+      {/* Data files the question uses (e.g. scores.txt), so students can see what is inside */}
+      <QuestionFilesPanel task={task} />
 
       {/* Type-Specific Interactive Inputs */}
       {/* 1. CODE QUESTION */}

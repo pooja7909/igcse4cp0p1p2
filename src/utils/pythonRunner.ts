@@ -53,6 +53,42 @@ function findFile(filename: string, taskFiles?: Record<string, string>): string 
   return undefined;
 }
 
+/** Content of a data file as the Python runner would open it (undefined = no such file). */
+export function findDataFile(filename: string, taskFiles?: Record<string, string>): string | undefined {
+  return findFile(filename, taskFiles);
+}
+
+/**
+ * The data files a question uses: files attached to it, plus any file name mentioned
+ * in the question text, starter code or (optionally) the student's code, e.g. "scores.txt".
+ */
+export function listQuestionFiles(
+  task: any,
+  extraText = ""
+): Array<{ name: string; content: string | undefined }> {
+  const names = new Set<string>();
+  const attached: Record<string, string> = (task && task.dataFiles) || {};
+  for (const n of Object.keys(attached)) names.add(n);
+  const text = [
+    task?.title,
+    task?.brief,
+    task?.starter,
+    task?.code,
+    task?.starterFileName,
+    extraText,
+    ...(Array.isArray(task?.parts) ? task.parts.map((p: any) => `${p?.question || ""}`) : []),
+  ]
+    .map((x) => String(x || ""))
+    .join("\n");
+  const re = /([A-Za-z0-9_\-]+\.(?:txt|csv|dat))\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    if (task?.starterFileName && m[1] === task.starterFileName && !/\.(txt|csv|dat)$/i.test(task.starterFileName)) continue;
+    names.add(m[1]);
+  }
+  return Array.from(names).map((name) => ({ name, content: findFile(name, attached) }));
+}
+
 export function runPython(
   code: string,
   inputs: string[] = [],
