@@ -21,6 +21,7 @@ import {
   getMigrationMarker,
   setMigrationMarker,
   hasPreviousDatabase,
+  readPreviousCollection,
 } from "./serverStore.js";
 
 dotenv.config();
@@ -3226,8 +3227,74 @@ app.delete("/api/teachers/:id", requireTeacher, (req, res) => {
   res.json({ success: true });
 });
 
-app.post("/api/teacher/login", (req, res) => {
+function matchTeacherCredentials(db: Record<string, any>, email: any, password: any, passcode: any): any | null {
+  const check = (t: any, secret: string) => {
+    try {
+      if (!t || !t.salt || !t.hash) return false;
+      const computed = hashTeacherPassword(secret, t.salt);
+      return crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(t.hash));
+    } catch {
+      return false;
+    }
+  };
+  if (email && password) {
+    const cleanEmail = String(email).trim().toLowerCase();
+    const t = Object.values(db).find((x: any) => String(x?.email || "").toLowerCase() === cleanEmail);
+    return t && check(t, String(password)) ? t : null;
+  }
+  const candidate = passcode || password;
+  if (!candidate || typeof candidate !== "string") return null;
+  return Object.values(db).find((t: any) => check(t, candidate)) || null;
+}
+
+// Copies everything from the previous database once (shared by the button and by login)
+let migrationInFlight: Promise<any> | null = null;
+async function runMigrationOnce(): Promise<any> {
+  if (migrationInFlight) return migrationInFlight;
+  migrationInFlight = (async () => {
+    const marker = await getMigrationMarker();
+    if (marker) return { alreadyDone: true, marker };
+    const result = await copyFromPreviousDatabase(MIGRATED_COLLECTIONS);
+    await setMigrationMarker({ at: Date.now(), copied: result.copied, source: result.source });
+    await pullSharedState("all");
+    return result;
+  })().finally(() => {
+    migrationInFlight = null;
+  });
+  return migrationInFlight;
+}
+
+// Before the data has been copied to the new database, the teacher's existing passwords
+// still work: they are checked against the previous database, and a correct one brings
+// all the data across straight away.
+async function loginWithPreviousDatabase(email: any, password: any, passcode: any): Promise<any | null> {
+  try {
+    if (!isSharedStoreEnabled() || !hasPreviousDatabase()) return null;
+    if (await getMigrationMarker()) return null;
+    const prevTeachers = await readPreviousCollection("teachers");
+    const t = matchTeacherCredentials(prevTeachers, email, password, passcode);
+    if (!t) return null;
+    await runMigrationOnce();
+    return teachersDb[t.id] || t;
+  } catch (err) {
+    console.error("[migration] Login with previous database failed:", err);
+    return null;
+  }
+}
+
+app.post("/api/teacher/login", async (req, res) => {
   const { email, password, passcode } = req.body || {};
+
+  const local = matchTeacherCredentials(teachersDb, email, password, passcode);
+  if (!local) {
+    const migrated = await loginWithPreviousDatabase(email, password, passcode);
+    if (migrated) {
+      const token = issueTeacherToken(migrated.id);
+      const { salt: _s, hash: _h, ...profile } = migrated;
+      res.json({ success: true, token, teacher: profile, migrated: true });
+      return;
+    }
+  }
 
   // Mode 1: Individual Teacher Account (Email + Password)
   if (email && password) {
@@ -5034,14 +5101,11 @@ app.post("/api/admin/copy-previous-database", requireTeacher, async (_req, res) 
       res.status(400).json({ error: "The shared database is not in use on this server." });
       return;
     }
-    const marker = await getMigrationMarker();
-    if (marker) {
-      res.status(409).json({ error: "The data was already copied on " + new Date(marker.at).toLocaleString() + ". It is not copied twice, so newer work is never replaced." });
+    const result = await runMigrationOnce();
+    if (result.alreadyDone) {
+      res.status(409).json({ error: "The data was already copied on " + new Date(result.marker.at).toLocaleString() + ". It is not copied twice, so newer work is never replaced." });
       return;
     }
-    const result = await copyFromPreviousDatabase(MIGRATED_COLLECTIONS);
-    await setMigrationMarker({ at: Date.now(), copied: result.copied, source: result.source });
-    await pullSharedState("all"); // load the copied data into this server copy straight away
     res.json({ success: true, ...result });
   } catch (err: any) {
     console.error("[migration] Copy failed:", err);

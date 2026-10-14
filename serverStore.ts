@@ -315,6 +315,21 @@ export async function copyFromPreviousDatabase(collections: string[]): Promise<{
   return { copied, source: `${prev.projectId} / ${prevDbId}` };
 }
 
+/** All records of one collection in the previous database (read-only), as objects. */
+export async function readPreviousCollection(collection: string): Promise<Record<string, any>> {
+  const prev = loadFirebaseConfig().previousDatabase;
+  if (!prev || !prev.projectId) return {};
+  const from = await createAdapter({ cfg: prev, testDir: process.env.STORE_TEST_PREVIOUS_DIR, appName: "edexcel-previous" });
+  const out: Record<string, any> = {};
+  for (const d of await from.readSince(collection, 0)) {
+    if (d.json === null) continue;
+    try {
+      out[d.id] = JSON.parse(d.json);
+    } catch {}
+  }
+  return out;
+}
+
 export async function getMigrationMarker(): Promise<any | null> {
   if (!isSharedStoreEnabled()) return null;
   const a = await adapter();
