@@ -192,11 +192,15 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
     setCheckingId(qid);
     setCheckError((e) => ({ ...e, [qid]: "" }));
     try {
+      const ctrl = new AbortController();
+      const abortTimer = setTimeout(() => ctrl.abort(), 60000);
       const res = await fetch(`/api/assessments/${liveAssessment.id}/check`, {
+        signal: ctrl.signal,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ studentId: studentSession.studentId, questionId: qid, answer: answers[qid] }),
       });
+      clearTimeout(abortTimer);
       const data = await res.json().catch(() => null);
       if (!res.ok || !data) {
         setCheckError((e) => ({ ...e, [qid]: (data && data.error) || "Could not check your answer. Please try again." }));
@@ -206,8 +210,14 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
         return;
       }
       setCheckResults((r) => ({ ...r, [qid]: { ...data, answerChecked: JSON.stringify(answers[qid] ?? "") } }));
-    } catch {
-      setCheckError((e) => ({ ...e, [qid]: "Could not reach the server. Please try again." }));
+    } catch (err: any) {
+      setCheckError((e) => ({
+        ...e,
+        [qid]:
+          err && err.name === "AbortError"
+            ? "Checking took too long, so it was stopped. Your answer is saved - try again in a minute."
+            : "Could not reach the server. Please try again.",
+      }));
     } finally {
       setCheckingId(null);
     }

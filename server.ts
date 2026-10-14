@@ -5024,7 +5024,22 @@ app.post("/api/assessments/:id/check", async (req, res) => {
     return;
   }
 
-  const result = await autoMarkTaskOnServer(q, convertMcqAnswer(q, a.id, studentId, answer, true));
+  // Never keep a student waiting: if the AI marker is busy, say so (the check is not used up)
+  const CHECK_TIME_LIMIT_MS = Number(process.env.CHECK_TIME_LIMIT_MS) || 40_000;
+  let timer: any;
+  const result: any = await Promise.race([
+    autoMarkTaskOnServer(q, convertMcqAnswer(q, a.id, studentId, answer, true)),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), CHECK_TIME_LIMIT_MS);
+    }),
+  ]);
+  clearTimeout(timer);
+  if (!result) {
+    res.status(503).json({
+      error: "Checking is taking too long right now (the marker is busy). Your answer is saved and this check was not used up - try again in a minute.",
+    });
+    return;
+  }
   s.answerChecks = { ...(s.answerChecks || {}), [questionId]: used + 1 };
   s.lastActiveAt = Date.now();
   savePersistedAssessments();
@@ -5054,7 +5069,7 @@ app.post("/api/assessments/:id/check", async (req, res) => {
   const tests =
     detail === "result" || !Array.isArray(result.tests)
       ? undefined
-      : result.tests.map((t) => ({
+      : result.tests.map((t: any) => ({
           inputs: t.inputs,
           output: withoutPrompts(t.output),
           passed: t.passed,
@@ -5068,11 +5083,49 @@ app.post("/api/assessments/:id/check", async (req, res) => {
     marks,
     maxMarks,
     verdict: marks >= maxMarks ? "correct" : marks > 0 ? "partial" : "incorrect",
-    feedback: revealsAnswer ? undefined : result.feedback,
+    feedback: revealsAnswer ? undefined : studentFriendlyFeedback(String(result.feedback || ""), result.tests, marks, maxMarks),
     tests,
     checksLeft: limit > 0 ? limit - (used + 1) : null,
   });
 });
+
+/**
+ * Marking notes are written for teachers ("The candidate ...", "Anti-Hardcoding Shield").
+ * For a student checking their answer, say it plainly and to them.
+ */
+function studentFriendlyFeedback(raw: string, tests: any[] | undefined, marks: number, maxMarks: number): string {
+  const parts: string[] = [];
+  if (Array.isArray(tests) && tests.length) {
+    const passed = tests.filter((t) => t && t.passed).length;
+    if (passed === tests.length) parts.push("Your program gave the right output for every test.");
+    else if (passed === 0) parts.push(`Your program did not give the right output for ${tests.length === 1 ? "the test" : `any of the ${tests.length} tests`}.`);
+    else parts.push(`Your program gave the right output for ${passed} of ${tests.length} tests.`);
+    const crash = tests.find((t) => t && t.error);
+    if (crash) {
+      const firstLine = String(crash.error).split("\n").filter(Boolean).pop() || String(crash.error);
+      parts.push(`It stopped with an error: ${firstLine.slice(0, 200)}`);
+    }
+  }
+  let text = String(raw || "")
+    .replace(/\s*\(Anti-Hardcoding Shield active\)/gi, "")
+    .replace(/Passed \d+ of \d+ automated test cases\.?/gi, "")
+    .replace(/AI marked against the mark scheme:\s*/gi, "")
+    .replace(/Marked against the mark scheme:\s*/gi, "")
+    .replace(/\b(The|the) (candidate|student)'s\b/g, (_m, t) => (t === "The" ? "Your" : "your"))
+    .replace(/\b(The|the) (candidate|student)\b/g, (_m, t) => (t === "The" ? "You" : "you"))
+    .replace(/\b(candidate|student)'s\b/gi, "your")
+    .replace(/\b(you|You) (has|is|was|does|fails|uses|implements|prints|outputs|correctly|successfully)\b/g, (_m, y, v) => {
+      const fix: Record<string, string> = { has: "have", is: "are", was: "were", does: "do", fails: "fail", uses: "use", implements: "implement", prints: "print", outputs: "output" };
+      return `${y} ${fix[v] || v}`;
+    })
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text) parts.push(text);
+  if (!parts.length) {
+    parts.push(marks >= maxMarks ? "Well done - full marks." : "Not all marks yet - read the question again and check each requirement.");
+  }
+  return parts.join(" ");
+}
 
 // Student submits assessment (Server-authoritative auto-grading)
 app.post("/api/assessments/:id/submit", async (req, res) => {
