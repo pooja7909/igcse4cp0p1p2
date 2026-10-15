@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { MarkPointsList } from "../MarkPointsList";
 import {
   CheckCircle2,
   AlertCircle,
@@ -391,6 +392,16 @@ export const StudentResultPortal: React.FC<StudentResultPortalProps> = ({
                                   </div>
                                 )}
                               </div>
+                            )}
+
+                            {/* Where marks were gained and lost */}
+                            {((releaseSettings?.shareQuestionMarks !== false &&
+                              (studentData as any)?.markBreakdowns?.[q.id]?.length > 0) ||
+                              (studentData as any)?.markingNotes?.[q.id]) && (
+                              <MarkPointsList
+                                points={releaseSettings?.shareQuestionMarks !== false ? (studentData as any)?.markBreakdowns?.[q.id] : undefined}
+                                feedback={(studentData as any)?.markingNotes?.[q.id]}
+                              />
                             )}
 
                             {/* Teacher's comment on this question */}

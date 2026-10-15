@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Assessment, IGCSETask, StudentSession, MarkResult } from "../../types";
 import { QuestionCard } from "../QuestionCard";
+import { MarkPointsList } from "../MarkPointsList";
 import { syncStudentSessionToFirestore } from "../../firebase";
 import {
   Clock,
@@ -172,6 +173,7 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
     feedback?: string;
     checksLeft: number | null; // null = unlimited
     answerChecked: string;
+    points?: Array<{ point: string; awarded: number; max: number; reason?: string }>;
     tests?: Array<{
       inputs: string[];
       output: string;
@@ -750,7 +752,13 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
                       ? `◐ Partly correct: ${r.marks}/${r.maxMarks} marks`
                       : `✗ Not correct yet: 0/${r.maxMarks} marks`}
                   </div>
-                  {r.feedback && <div className="text-xs mt-1 whitespace-pre-line">{r.feedback}</div>}
+                  {r.points && r.points.length > 0 ? (
+                    <div className="mt-2">
+                      <MarkPointsList points={r.points} feedback={r.feedback} />
+                    </div>
+                  ) : (
+                    r.feedback && <div className="text-xs mt-1 whitespace-pre-line">{r.feedback}</div>
+                  )}
                   {Array.isArray(r.tests) && r.tests.length > 0 && (
                     <div className="mt-3 space-y-2">
                       <div className="text-xs font-bold">Test by test (where you gained and lost marks):</div>

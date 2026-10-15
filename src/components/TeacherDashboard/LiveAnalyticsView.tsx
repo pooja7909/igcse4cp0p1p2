@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Assessment, StudentSession, LiveAssessmentStats, IGCSETask } from "../../types";
 import { PythonSnippetViewer } from "../PythonSnippetViewer";
 import { QuestionFilesPanel } from "../QuestionFilesPanel";
+import { EditableMarkPoints } from "./EditableMarkPoints";
 import { TeacherPythonRunner } from "./TeacherPythonRunner";
 import { teacherFetch } from "../../utils/teacherAuth";
 import { StudentReflectionSheet } from "../StudentExam/StudentReflectionSheet";
@@ -87,6 +88,16 @@ export const LiveAnalyticsView: React.FC<LiveAnalyticsViewProps> = ({
   const [overrideMark, setOverrideMark] = useState<string>("");
   const [feedbackNote, setFeedbackNote] = useState<string>("");
   const [selectedQId, setSelectedQId] = useState<string>("");
+  // Questions taken out of the assessment after some students had answered them
+  const [replacedQuestions, setReplacedQuestions] = useState<any[]>([]);
+  const isBlank = (v: any): boolean =>
+    v === undefined ||
+    v === null ||
+    (typeof v === "string" && !v.trim()) ||
+    (Array.isArray(v) && (v.length === 0 || v.every((x) => isBlank(x)))) ||
+    (typeof v === "object" && !Array.isArray(v) && Object.values(v).every((x) => isBlank(x)));
+  const replacedFor = (st: any) =>
+    replacedQuestions.filter((q) => q && q.id && !isBlank((st?.answers || {})[q.id]));
   const [generatingAiFeedback, setGeneratingAiFeedback] = useState(false);
   const [copiedReport, setCopiedReport] = useState(false);
   const [expandedMarkSchemes, setExpandedMarkSchemes] = useState<Record<string, boolean>>({});
@@ -113,6 +124,7 @@ export const LiveAnalyticsView: React.FC<LiveAnalyticsViewProps> = ({
         setStudents(data.students || []);
         setStats(data.stats || stats);
         setQuestionAnalytics(data.questionAnalytics || {});
+        setReplacedQuestions(Array.isArray(data.replacedQuestions) ? data.replacedQuestions : []);
         if (data.releaseSettings) {
           setReleaseSettings(data.releaseSettings);
         }
@@ -803,6 +815,14 @@ ${diag.questionBreakdowns
                     Q{i + 1}
                   </th>
                 ))}
+                {replacedQuestions.length > 0 && (
+                  <th
+                    className="px-2 py-3 text-center text-amber-700"
+                    title="Marks for questions you replaced after this student had answered them (see Inspect)"
+                  >
+                    Replaced Qs
+                  </th>
+                )}
                 <th className="px-3 py-3">Submitted</th>
                 <th className="px-3 py-3 text-right">Actions</th>
               </tr>
@@ -905,6 +925,26 @@ ${diag.questionBreakdowns
                           </td>
                         );
                       })}
+
+                      {replacedQuestions.length > 0 && (
+                        <td className="px-1.5 py-3 text-center">
+                          {(() => {
+                            const rq = replacedFor(student);
+                            if (!rq.length) return <span className="text-slate-300">—</span>;
+                            const got = rq.reduce((acc, q) => acc + (Number((student.marks || {})[q.id]) || 0), 0);
+                            const max = rq.reduce((acc, q) => acc + (Number(q.marks) || 0), 0);
+                            return (
+                              <span
+                                className="inline-block px-1.5 h-6 leading-6 rounded text-[11px] font-mono bg-amber-100 text-amber-900 font-bold"
+                                title={`${rq.length} replaced question(s) answered`}
+                              >
+                                {got}
+                                {max ? `/${max}` : ""}
+                              </span>
+                            );
+                          })()}
+                        </td>
+                      )}
 
                       <td className="px-3 py-3 text-slate-500 text-[11px]">
                         {student.submittedAt
@@ -1523,6 +1563,18 @@ ${diag.questionBreakdowns
                         )}
                       </div>
 
+                      {/* How the automatic marker awarded the marks, point by point */}
+                      <EditableMarkPoints
+                        assessmentId={assessment.id}
+                        studentId={selectedStudent.studentId}
+                        questionId={qId}
+                        questionMax={maxM}
+                        currentMark={awarded ?? 0}
+                        points={((selectedStudent as any).markBreakdowns || {})[qId]}
+                        feedback={((selectedStudent as any).markingNotes || {})[qId]}
+                        onSaved={(st) => applyStudentUpdate(st)}
+                      />
+
                       {/* AI Question-Level Error & Spec Topic Breakdown */}
                       {breakdown && (
                         <div className="p-3 bg-purple-50/80 border border-purple-200 rounded-xl space-y-2 text-xs">
@@ -1693,6 +1745,138 @@ ${diag.questionBreakdowns
                   );
                 })}
               </div>
+
+              {/* Work on questions that were replaced after this student answered them */}
+              {replacedFor(selectedStudent).length > 0 && (
+                <div className="mt-6 space-y-4">
+                  <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 text-xs text-amber-900">
+                    <span className="font-bold">Answers to questions you later replaced.</span> This student answered these before
+                    you edited the assessment. Their work and marks are kept and count towards their total. If the student
+                    also answered the new version, set the one you don't want to count to 0.
+                  </div>
+                  {replacedFor(selectedStudent).map((task: any) => {
+                    const qId = task.id;
+                    const answer = (selectedStudent.answers || {})[qId];
+                    const awarded = Number((selectedStudent.marks || {})[qId] ?? 0);
+                    const maxM = Number(task.marks) || 0;
+                    return (
+                      <div key={qId} className="border-2 border-amber-200 rounded-2xl p-4 bg-white space-y-3 text-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold text-slate-900">
+                            Replaced question: {task.title || qId}
+                          </span>
+                          <span className="font-mono font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-900">
+                            {awarded}
+                            {maxM ? ` / ${maxM}` : ""} marks
+                          </span>
+                        </div>
+                        {task.brief && <p className="whitespace-pre-line text-slate-700 p-2 bg-slate-50 rounded-lg">{task.brief}</p>}
+                        {typeof answer === "string" && (task.type === "code" || /\b(print|input|def |for |while )/.test(answer)) ? (
+                          <div className="space-y-2">
+                            <PythonSnippetViewer code={answer} title="Student's answer" />
+                            <button
+                              type="button"
+                              onClick={() => setOpenRunners((o) => ({ ...o, [qId]: !o[qId] }))}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-emerald-400 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-bold"
+                            >
+                              {openRunners[qId] ? "Hide Python runner" : "▶ Run this code in Python"}
+                            </button>
+                            {openRunners[qId] && <TeacherPythonRunner task={task} studentCode={answer} />}
+                          </div>
+                        ) : (
+                          <pre className="p-3 bg-slate-50 border border-slate-200 rounded-xl whitespace-pre-wrap font-mono">
+                            {typeof answer === "string" ? answer : JSON.stringify(answer, null, 2)}
+                          </pre>
+                        )}
+                        {maxM > 0 && (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-slate-500 font-medium mr-1">Mark:</span>
+                            {Array.from({ length: maxM + 1 }).map((_, mVal) => (
+                              <button
+                                key={mVal}
+                                onClick={() => handleQuickMark(qId, mVal)}
+                                className={`px-2.5 py-1 rounded-lg font-bold border ${
+                                  awarded === mVal
+                                    ? "bg-purple-700 text-white border-purple-700"
+                                    : "bg-white text-slate-700 border-slate-200 hover:bg-purple-50"
+                                }`}
+                              >
+                                {mVal}m
+                              </button>
+                            ))}
+                            {quickMarkMsg && quickMarkMsg.qId === qId && (
+                              <span className={`font-semibold ${quickMarkMsg.ok ? "text-emerald-700" : "text-red-700"}`}>
+                                {quickMarkMsg.text}
+                              </span>
+                            )}
+                          </div>
+                        )}
+{(() => {
+                          const saved = ((selectedStudent as any).questionComments || {})[qId] as string | undefined;
+                          const lostMarks = (awarded ?? 0) < (maxM ?? 0);
+                          if (!lostMarks && !saved && commentDrafts[qId] === undefined) return null;
+                          const value = commentDrafts[qId] ?? saved ?? "";
+                          const busy = commentBusy[qId];
+                          const msg = commentMsg[qId];
+                          return (
+                            <div className="p-3 rounded-xl border border-amber-200 bg-amber-50/60 space-y-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span className="text-xs font-bold text-amber-900">
+                                  Comment for this question (what went wrong & how to improve)
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => suggestComment(qId)}
+                                  disabled={!!busy}
+                                  className="px-2.5 py-1 rounded-lg border border-purple-300 bg-white hover:bg-purple-50 text-purple-800 text-[11px] font-bold disabled:opacity-50"
+                                >
+                                  {busy === "suggest" ? "Writing..." : value ? "✨ Suggest again" : "✨ Suggest a comment"}
+                                </button>
+                              </div>
+                              <textarea
+                                value={value}
+                                onChange={(e) => setCommentDrafts((d) => ({ ...d, [qId]: e.target.value }))}
+                                rows={3}
+                                placeholder="e.g. Your loop stops one item early, so the last score is not added. Use range(len(scores)) or loop over the list directly."
+                                className="w-full p-2 text-xs border border-amber-200 rounded-lg bg-white"
+                              />
+                              <div className="flex flex-wrap items-center gap-3">
+                                <button
+                                  type="button"
+                                  onClick={() => saveComment(qId)}
+                                  disabled={!!busy || (commentDrafts[qId] === undefined && !!saved)}
+                                  className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold disabled:opacity-50"
+                                >
+                                  {busy === "save" ? "Saving..." : "Save comment"}
+                                </button>
+                                {saved && commentDrafts[qId] === undefined && !msg && (
+                                  <span className="text-[11px] text-emerald-700 font-semibold">✓ Saved - students see it when you release results</span>
+                                )}
+                                {commentDrafts[qId] !== undefined && commentDrafts[qId] !== (saved ?? "") && !busy && (
+                                  <span className="text-[11px] text-amber-800 font-semibold">Not saved yet</span>
+                                )}
+                                {msg && (
+                                  <span className={`text-[11px] font-semibold ${msg.ok ? "text-emerald-700" : "text-red-700"}`}>{msg.text}</span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })()}
+                        <EditableMarkPoints
+                          assessmentId={assessment.id}
+                          studentId={selectedStudent.studentId}
+                          questionId={qId}
+                          questionMax={maxM || 1}
+                          currentMark={awarded}
+                          points={((selectedStudent as any).markBreakdowns || {})[qId]}
+                          feedback={((selectedStudent as any).markingNotes || {})[qId]}
+                          onSaved={(st) => applyStudentUpdate(st)}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
 
 
             </div>
