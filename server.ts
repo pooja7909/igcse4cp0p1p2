@@ -5486,13 +5486,18 @@ app.post("/api/assessments/:id/suggest-comments", requireTeacher, async (req, re
   }
   const s = a.students[studentId];
   const enriched = enrichAssessment(a);
-  const questions: any[] = enriched.questions || [];
+  const questions: any[] = [
+    ...(enriched.questions || []),
+    ...replacedQuestionsFor(a, s).filter((r) => r.task).map((r) => ({ ...r.task, id: r.id })),
+  ];
   const wanted = Array.isArray(questionIds) && questionIds.length ? new Set(questionIds.map(String)) : null;
   const targets = questions.filter((q) => {
     if (!q || !q.id) return false;
     if (wanted) return wanted.has(q.id);
     const max = Number(q.marks) || 0;
     const got = Number((s.marks || {})[q.id] ?? 0);
+    // A new question this student never did (they did the version it replaced): nothing to comment on
+    if (isBlankAnswer((s.answers || {})[q.id]) && replacedQuestionsFor(a, s).length) return false;
     return max > 0 && got < max; // only questions that lost marks
   });
 
@@ -5924,7 +5929,20 @@ function buildStudentResultPayload(a: AssessmentStore, s: LiveStudentSession) {
 
   // Get up-to-date question definitions
   const enriched = enrichAssessment(a);
-  const masterQuestions = enriched.questions || [];
+  // Each student sees the version of the paper they actually did: if questions were
+  // replaced after they answered them, their original questions take the place of the
+  // new ones they did not answer.
+  let masterQuestions: any[] = enriched.questions || [];
+  const replacedDone = replacedQuestionsFor(a, s).filter((r) => r.task).map((r) => ({ ...r.task, id: r.id }));
+  if (replacedDone.length) {
+    const queue = [...replacedDone];
+    const ordered: any[] = [];
+    for (const q of masterQuestions) {
+      if (queue.length && isBlankAnswer((s.answers || {})[q.id])) ordered.push(queue.shift());
+      else ordered.push(q);
+    }
+    masterQuestions = [...ordered, ...queue];
+  }
 
   const canShareSolutions = a.type === "task" || (a.shareSolutions !== false && releaseSettings.shareMarkScheme);
 
@@ -5996,7 +6014,7 @@ function buildStudentResultPayload(a: AssessmentStore, s: LiveStudentSession) {
       classGroup: a.classGroup || undefined,
       maxMarks: a.maxMarks,
       durationMinutes: a.durationMinutes,
-      questionIds: a.questionIds,
+      questionIds: masterQuestions.map((q: any) => q.id),
       questions: sanitizedQuestions,
       gradeBoundaries: a.gradeBoundaries,
     },

@@ -1811,6 +1811,57 @@ ${diag.questionBreakdowns
                             )}
                           </div>
                         )}
+{(() => {
+                          const saved = ((selectedStudent as any).questionComments || {})[qId] as string | undefined;
+                          const lostMarks = (awarded ?? 0) < (maxM ?? 0);
+                          if (!lostMarks && !saved && commentDrafts[qId] === undefined) return null;
+                          const value = commentDrafts[qId] ?? saved ?? "";
+                          const busy = commentBusy[qId];
+                          const msg = commentMsg[qId];
+                          return (
+                            <div className="p-3 rounded-xl border border-amber-200 bg-amber-50/60 space-y-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span className="text-xs font-bold text-amber-900">
+                                  Comment for this question (what went wrong & how to improve)
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => suggestComment(qId)}
+                                  disabled={!!busy}
+                                  className="px-2.5 py-1 rounded-lg border border-purple-300 bg-white hover:bg-purple-50 text-purple-800 text-[11px] font-bold disabled:opacity-50"
+                                >
+                                  {busy === "suggest" ? "Writing..." : value ? "✨ Suggest again" : "✨ Suggest a comment"}
+                                </button>
+                              </div>
+                              <textarea
+                                value={value}
+                                onChange={(e) => setCommentDrafts((d) => ({ ...d, [qId]: e.target.value }))}
+                                rows={3}
+                                placeholder="e.g. Your loop stops one item early, so the last score is not added. Use range(len(scores)) or loop over the list directly."
+                                className="w-full p-2 text-xs border border-amber-200 rounded-lg bg-white"
+                              />
+                              <div className="flex flex-wrap items-center gap-3">
+                                <button
+                                  type="button"
+                                  onClick={() => saveComment(qId)}
+                                  disabled={!!busy || (commentDrafts[qId] === undefined && !!saved)}
+                                  className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold disabled:opacity-50"
+                                >
+                                  {busy === "save" ? "Saving..." : "Save comment"}
+                                </button>
+                                {saved && commentDrafts[qId] === undefined && !msg && (
+                                  <span className="text-[11px] text-emerald-700 font-semibold">✓ Saved - students see it when you release results</span>
+                                )}
+                                {commentDrafts[qId] !== undefined && commentDrafts[qId] !== (saved ?? "") && !busy && (
+                                  <span className="text-[11px] text-amber-800 font-semibold">Not saved yet</span>
+                                )}
+                                {msg && (
+                                  <span className={`text-[11px] font-semibold ${msg.ok ? "text-emerald-700" : "text-red-700"}`}>{msg.text}</span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })()}
                         <EditableMarkPoints
                           assessmentId={assessment.id}
                           studentId={selectedStudent.studentId}
