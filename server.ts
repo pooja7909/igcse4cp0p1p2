@@ -3713,6 +3713,33 @@ All solutions must read dynamic inputs and process variables. Solutions that out
 }
 
 // Helper to ensure assessment returns the most up-to-date question definitions
+// ---------- Questions replaced after students had answered them ----------
+// Editing an assessment never deletes students' work: answers and marks for a question
+// that was taken out stay with the student, and are shown and counted as "replaced questions".
+function findQuestionDefinition(a: AssessmentStore, id: string): any | null {
+  const retired = (a as any).retiredQuestions || {};
+  return retired[id] || customQuestionsDb[id] || ALL_BUILTIN_TASKS[id] || null;
+}
+
+function isBlankAnswer(v: any): boolean {
+  if (v === undefined || v === null) return true;
+  if (typeof v === "string") return !v.trim();
+  if (Array.isArray(v)) return v.length === 0 || v.every((x) => isBlankAnswer(x));
+  if (typeof v === "object") return Object.values(v).every((x) => isBlankAnswer(x));
+  return false;
+}
+
+/** Replaced questions this student answered (definition may be null if it can no longer be found). */
+function replacedQuestionsFor(a: AssessmentStore, s: any): Array<{ id: string; task: any | null }> {
+  const current = new Set(a.questionIds || []);
+  const out: Array<{ id: string; task: any | null }> = [];
+  for (const [qid, v] of Object.entries(s?.answers || {})) {
+    if (current.has(qid) || isBlankAnswer(v)) continue;
+    out.push({ id: qid, task: findQuestionDefinition(a, qid) });
+  }
+  return out;
+}
+
 function enrichAssessment(a: AssessmentStore): AssessmentStore {
   if (!a) return a;
   const questionMap: Record<string, any> = {};
@@ -4851,7 +4878,16 @@ app.put("/api/assessments/:id", requireTeacher, (req, res) => {
   if (req.body?.feedbackDetail !== undefined) a.feedbackDetail = cleanFeedbackDetail(req.body.feedbackDetail);
   if (req.body?.classGroup !== undefined) a.classGroup = cleanClassGroup(req.body.classGroup);
   if (req.body?.maxChecks !== undefined) a.maxChecks = cleanMaxChecks(req.body.maxChecks);
-  if (Array.isArray(questionIds)) a.questionIds = questionIds;
+  if (Array.isArray(questionIds)) {
+    // Keep the full definition of any question taken out, so answers to it can still be shown and marked
+    const before = enrichAssessment(a).questions || [];
+    const keep = new Set(questionIds.map(String));
+    const retired: Record<string, any> = { ...((a as any).retiredQuestions || {}) };
+    for (const q of before) if (q && q.id && !keep.has(q.id)) retired[q.id] = q;
+    for (const id of keep) delete retired[id];
+    (a as any).retiredQuestions = retired;
+    a.questionIds = questionIds;
+  }
   if (Array.isArray(questions)) a.questions = questions;
   if (maxMarks !== undefined) a.maxMarks = Math.max(1, Number(maxMarks) || 1);
   if (status !== undefined) a.status = status;
@@ -5248,7 +5284,8 @@ app.post("/api/assessments/:id/submit", async (req, res) => {
   let calculatedTotal = 0;
 
   if (masterQuestions.length) {
-    const result = await markAllQuestions(masterQuestions, s.answers);
+    const replaced = replacedQuestionsFor(a, s).filter((r) => r.task).map((r) => r.task);
+    const result = await markAllQuestions([...masterQuestions, ...replaced], s.answers);
     Object.assign(officialMarks, result.marks);
     calculatedTotal = result.total;
     s.markingNotes = result.notes;
@@ -5541,8 +5578,21 @@ app.get("/api/assessments/:id/live", requireTeacher, (req, res) => {
     };
   }
 
+  // Questions taken out of the assessment that some students had already answered
+  const replacedMap: Record<string, any> = {};
+  for (const st of studentsList as any[]) {
+    for (const r of replacedQuestionsFor(a, st)) {
+      if (!replacedMap[r.id]) {
+        replacedMap[r.id] = r.task
+          ? { ...r.task, id: r.id }
+          : { id: r.id, title: "Question removed from this assessment", marks: undefined, type: "unknown" };
+      }
+    }
+  }
+
   res.json({
     assessment: a,
+    replacedQuestions: Object.values(replacedMap),
     students: studentsList,
     stats: {
       totalJoined: studentsList.length,
@@ -5636,7 +5686,8 @@ app.post("/api/assessments/:id/regrade-student", requireTeacher, async (req, res
   let calculatedTotal = 0;
 
   if (masterQuestions.length) {
-    const result = await markAllQuestions(masterQuestions, s.answers || {});
+    const replaced = replacedQuestionsFor(a, s).filter((r) => r.task).map((r) => r.task);
+    const result = await markAllQuestions([...masterQuestions, ...replaced], s.answers || {});
     Object.assign(officialMarks, result.marks);
     calculatedTotal = result.total;
     s.markingNotes = result.notes;
