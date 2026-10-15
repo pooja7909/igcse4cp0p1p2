@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+/* Show code exactly as typed: no font ligatures, so >= != <= == -> stay as two characters
+   (JetBrains Mono would otherwise draw them as single symbols such as ≥ and ≠) */
+html,
+body,
+pre,
+code,
+textarea,
+input,
+.font-mono {
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+}

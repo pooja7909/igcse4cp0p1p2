@@ -11,6 +11,13 @@
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+      /* Show code exactly as typed: >= != <= == stay as two characters (no ≥ ≠ symbols) */
+      html, body, pre, code, textarea, input, .font-mono {
+        font-variant-ligatures: none !important;
+        font-feature-settings: "liga" 0, "calt" 0 !important;
+      }
+    </style>
     <script src="https://cdn.jsdelivr.net/npm/skulpt@1.2.0/dist/skulpt.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/skulpt@1.2.0/dist/skulpt-stdlib.js"></script>
   </head>

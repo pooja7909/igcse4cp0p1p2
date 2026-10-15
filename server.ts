@@ -3088,6 +3088,7 @@ Return strictly a JSON object:
 {
   "awardedMarks": number (from 0 to ${maxMarks || 2}),
   "feedback": "Concise 1-2 sentence explanation of why marks were awarded or deducted",
+  "points": [ { "point": "one creditable point from the mark scheme (one entry per mark available)", "awarded": number, "max": number, "reason": "short reason" } ],
   "keyPointsMatched": ["list of mark scheme points the student earned"],
   "missingPoints": ["list of mark scheme points the student missed"]
 }`;
@@ -3102,7 +3103,12 @@ Return strictly a JSON object:
           awardedMarks: Math.min(maxMarks || 1, Math.max(0, parsed.awardedMarks ?? 0)),
           maxMarks: maxMarks || 1,
           feedback: parsed.feedback || "Evaluated by auto-marker.",
-          breakdown: parsed.keyPointsMatched || [],
+          breakdown: Array.isArray(parsed.points) && parsed.points.length
+            ? parsed.points
+            : [
+                ...(parsed.keyPointsMatched || []).map((p: any) => ({ point: String(p), awarded: 1, max: 1 })),
+                ...(parsed.missingPoints || []).map((p: any) => ({ point: String(p), awarded: 0, max: 1 })),
+              ],
         });
       }
     }
@@ -3857,7 +3863,12 @@ async function runPythonTests(
 }
 
 /** Uses Gemini to mark a code answer against the mark scheme, tests and model solution. */
-async function markCodeWithAI(task: any, code: string, maxMarks: number): Promise<{ m: number; feedback: string } | null> {
+async function markCodeWithAI(
+  task: any,
+  code: string,
+  maxMarks: number,
+  testResultsText = ""
+): Promise<{ m: number; feedback: string; points?: MarkPoint[] } | null> {
   const ai = getGeminiClient();
   if (!ai) return null;
   const ms = collectMarkScheme(task);
@@ -3896,9 +3907,15 @@ CANDIDATE'S CODE:
 \`\`\`python
 ${code}
 \`\`\`
+${testResultsText ? "\nWHAT THE CANDIDATE'S PROGRAM ACTUALLY PRINTED WHEN RUN:\n" + testResultsText + "\n" : ""}
+List every creditable mark point (use the given mark points; otherwise split the mark scheme into one point per mark, ${maxMarks} in total) and decide each one for THIS code.
 
 Return strictly a JSON object:
-{ "awardedMarks": number (0 to ${maxMarks}), "feedback": "2-3 sentences: which mark points were earned and what was missing" }`;
+{
+  "awardedMarks": number (0 to ${maxMarks}, the sum of awarded points),
+  "feedback": "2-4 sentences addressed to the student ('you'): what is done well, exactly what is wrong (name the line or logic), and how to fix it",
+  "points": [ { "point": "short description of the mark point", "awarded": number, "max": number, "reason": "short reason, only if not awarded" } ]
+}`;
 
   try {
     const response = await generateContentWithResilience(ai, {
@@ -3906,21 +3923,51 @@ Return strictly a JSON object:
       config: { responseMimeType: "application/json" },
     });
     const parsed = JSON.parse(response.text?.trim() || "{}");
-    const m = Math.max(0, Math.min(maxMarks, Math.round(Number(parsed.awardedMarks) || 0)));
-    return { m, feedback: `AI marked against the mark scheme: ${parsed.feedback || ""}`.trim() };
+    const points = normalizeMarkPoints(parsed.points);
+    let m = Math.max(0, Math.min(maxMarks, Math.round(Number(parsed.awardedMarks) || 0)));
+    if (points.length && !(Number(parsed.awardedMarks) >= 0)) {
+      m = Math.min(maxMarks, Math.round(points.reduce((acc, p) => acc + p.awarded, 0)));
+    }
+    return { m, feedback: String(parsed.feedback || "").trim(), points };
   } catch (e) {
     console.warn("[marking] AI code marking failed:", e);
     return null;
   }
 }
 
+/** One line of "where marks were gained and lost". */
+interface MarkPoint {
+  point: string;
+  awarded: number;
+  max: number;
+  reason?: string;
+}
+
+function normalizeMarkPoints(raw: any): MarkPoint[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((p: any) => {
+      if (!p) return null;
+      if (typeof p === "string") return { point: p, awarded: 0, max: 1 };
+      const point = String(p.point ?? p.criterion ?? p.description ?? p.text ?? p.markPointId ?? "").trim();
+      if (!point) return null;
+      const max = Math.max(0, Number(p.max ?? p.maxMarks ?? p.marks ?? 1) || 0);
+      const awarded = Math.max(0, Math.min(max || 1, Number(p.awarded ?? 0) || 0));
+      const reason = p.reason ? String(p.reason).trim() : undefined;
+      return { point: point.slice(0, 300), awarded, max: max || 1, ...(reason ? { reason: reason.slice(0, 300) } : {}) };
+    })
+    .filter(Boolean)
+    .slice(0, 20) as MarkPoint[];
+}
+
 /** Marks all questions in parallel (AI marking one-by-one could exceed the server time limit). */
 async function markAllQuestions(
   questions: any[],
   answers: Record<string, any>
-): Promise<{ marks: Record<string, number>; notes: Record<string, string>; total: number }> {
+): Promise<{ marks: Record<string, number>; notes: Record<string, string>; total: number; points: Record<string, MarkPoint[]> }> {
   const marks: Record<string, number> = {};
   const notes: Record<string, string> = {};
+  const points: Record<string, MarkPoint[]> = {};
   const list = questions.filter((q) => q && q.id);
   const CONCURRENCY = 5;
   let next = 0;
@@ -3931,6 +3978,7 @@ async function markAllQuestions(
         const r = await autoMarkTaskOnServer(q, answers ? answers[q.id] : undefined);
         marks[q.id] = r.m;
         if (r.feedback) notes[q.id] = r.feedback;
+        if (r.points && r.points.length) points[q.id] = r.points;
       } catch (e: any) {
         console.warn("[marking] Failed to mark", q.id, e);
         marks[q.id] = 0;
@@ -3940,7 +3988,7 @@ async function markAllQuestions(
   }
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, list.length) }, worker));
   const total = Object.values(marks).reduce((acc, m) => acc + (m || 0), 0);
-  return { marks, notes, total };
+  return { marks, notes, total, points };
 }
 
 interface CodeTestDetail {
@@ -3956,7 +4004,7 @@ interface CodeTestDetail {
 async function autoMarkTaskOnServer(
   task: any,
   studentAns: any
-): Promise<{ m: number; feedback?: string; tests?: CodeTestDetail[] }> {
+): Promise<{ m: number; feedback?: string; tests?: CodeTestDetail[]; points?: MarkPoint[] }> {
   if (!task) return { m: 0 };
   const maxMarks = task.marks || 1;
 
@@ -4259,18 +4307,30 @@ async function autoMarkTaskOnServer(
 
     let awarded = Math.max(0, Math.min(maxMarks, Math.round(earnedMarks)));
     let feedback = `Passed ${passedTests} of ${tests.length} automated test cases (Anti-Hardcoding Shield active).`;
+    let points: MarkPoint[] | undefined;
 
     // Tests are strict about exact output. If not everything passed and a mark scheme
-    // exists, let the AI examiner award method marks the tests could not see.
+    // exists, let the AI examiner award method marks the tests could not see, and say
+    // point by point where marks were gained and lost.
     if (passedTests < tests.length && hasMarkSchemeInfo(task)) {
-      const aiResult = await markCodeWithAI(task, code, maxMarks);
-      if (aiResult && aiResult.m > awarded) {
-        awarded = aiResult.m;
-        feedback = `${feedback} ${aiResult.feedback}`;
+      const ranText = testDetails
+        .slice(0, 6)
+        .map(
+          (t, i) =>
+            `Test ${i + 1}: inputs ${JSON.stringify(t.inputs)} | expected ${JSON.stringify(t.expected.slice(0, 300))} | printed ${JSON.stringify(
+              t.output.slice(0, 300)
+            )}${t.error ? " | error " + t.error : ""} | ${t.passed ? "PASS" : "FAIL"}`
+        )
+        .join("\n");
+      const aiResult = await markCodeWithAI(task, code, maxMarks, ranText);
+      if (aiResult) {
+        if (aiResult.points && aiResult.points.length) points = aiResult.points;
+        if (aiResult.m > awarded) awarded = aiResult.m;
+        if (aiResult.feedback) feedback = `${feedback} ${aiResult.feedback}`;
       }
     }
 
-    return { m: awarded, feedback, tests: testDetails };
+    return { m: awarded, feedback, tests: testDetails, ...(points ? { points } : {}) };
   }
 
   if (task.type === "theory") {
@@ -4278,6 +4338,7 @@ async function autoMarkTaskOnServer(
     if (subQs.length > 0) {
       let totalEarned = 0;
       const notes: string[] = [];
+      const subPoints: MarkPoint[] = [];
       const ansMap = typeof studentAns === "object" && studentAns !== null ? studentAns : {};
       for (const tsq of subQs) {
         const given = String(ansMap[tsq.id] || "");
@@ -4295,8 +4356,9 @@ async function autoMarkTaskOnServer(
         });
         totalEarned += Math.max(0, Math.min(subMax, Math.round(r.awardedMarks)));
         if (r.feedback) notes.push(r.feedback);
+        subPoints.push(...normalizeMarkPoints(r.breakdown));
       }
-      return { m: Math.min(maxMarks, totalEarned), feedback: notes.join(" ") };
+      return { m: Math.min(maxMarks, totalEarned), feedback: notes.join(" "), points: subPoints };
     }
 
     const ms = collectMarkScheme(task);
@@ -4312,6 +4374,7 @@ async function autoMarkTaskOnServer(
       feedback: task.manualReview
         ? `${r.feedback} (Originally a drawing question - please check this mark.)`
         : r.feedback,
+      points: normalizeMarkPoints(r.breakdown),
     };
   }
 
@@ -4327,7 +4390,7 @@ async function autoMarkTaskOnServer(
       markPoints: ms.markPoints.length ? ms.markPoints : undefined,
       maxMarks,
     });
-    return { m: Math.max(0, Math.min(maxMarks, Math.round(r.awardedMarks))), feedback: r.feedback };
+    return { m: Math.max(0, Math.min(maxMarks, Math.round(r.awardedMarks))), feedback: r.feedback, points: normalizeMarkPoints(r.breakdown) };
   }
   return { m: 0, feedback: "No mark scheme available for this question; please mark it manually." };
 }
@@ -5084,6 +5147,7 @@ app.post("/api/assessments/:id/check", async (req, res) => {
     maxMarks,
     verdict: marks >= maxMarks ? "correct" : marks > 0 ? "partial" : "incorrect",
     feedback: revealsAnswer ? undefined : studentFriendlyFeedback(String(result.feedback || ""), result.tests, marks, maxMarks),
+    points: revealsAnswer || detail === "result" || !Array.isArray(result.points) || !result.points.length ? undefined : result.points,
     tests,
     checksLeft: limit > 0 ? limit - (used + 1) : null,
   });
@@ -5188,6 +5252,7 @@ app.post("/api/assessments/:id/submit", async (req, res) => {
     Object.assign(officialMarks, result.marks);
     calculatedTotal = result.total;
     s.markingNotes = result.notes;
+    (s as any).markBreakdowns = result.points;
   }
 
   // If master questions were empty, fallback to client marks safely
@@ -5257,6 +5322,40 @@ app.post("/api/admin/copy-previous-database", requireTeacher, async (_req, res) 
     console.error("[migration] Copy failed:", err);
     res.status(500).json({ error: "Copy failed: " + explainDatabaseError(err) + " Nothing was lost - you can try again." });
   }
+});
+
+// Teacher edits the marker's feedback and the mark scheme points for one question
+app.post("/api/assessments/:id/edit-breakdown", requireTeacher, (req, res) => {
+  let a = assessmentsDb[req.params.id];
+  if (!a) a = Object.values(assessmentsDb).find((x) => x.code === String(req.params.id).toUpperCase()) as AssessmentStore;
+  const { studentId, questionId, feedback, points, applyMark } = req.body || {};
+  if (!a || !a.students || !a.students[studentId] || !questionId) {
+    res.status(404).json({ error: "Student or question not found" });
+    return;
+  }
+  const s: any = a.students[studentId];
+  if (feedback !== undefined) {
+    s.markingNotes = { ...(s.markingNotes || {}) };
+    const text = String(feedback || "").trim().slice(0, 4000);
+    if (text) s.markingNotes[questionId] = text;
+    else delete s.markingNotes[questionId];
+  }
+  if (points !== undefined) {
+    const clean = normalizeMarkPoints(Array.isArray(points) ? points : []);
+    s.markBreakdowns = { ...(s.markBreakdowns || {}) };
+    if (clean.length) s.markBreakdowns[questionId] = clean;
+    else delete s.markBreakdowns[questionId];
+    if (applyMark) {
+      const q = (enrichAssessment(a).questions || []).find((x: any) => x && x.id === questionId);
+      const qMax = Number(q?.marks) || Infinity;
+      const total = clean.reduce((acc, p) => acc + p.awarded, 0);
+      s.marks = { ...(s.marks || {}), [questionId]: Math.max(0, Math.min(qMax, Math.round(total * 10) / 10)) };
+      s.totalMarks = Object.values(s.marks).reduce((acc: number, m: any) => acc + (Number(m) || 0), 0);
+      s.percentage = a.maxMarks > 0 ? Math.round((s.totalMarks / a.maxMarks) * 100) : 0;
+    }
+  }
+  savePersistedAssessments();
+  res.json({ success: true, studentSession: s });
 });
 
 // ---------- Comment per question: what went wrong and how to improve ----------
@@ -5541,6 +5640,7 @@ app.post("/api/assessments/:id/regrade-student", requireTeacher, async (req, res
     Object.assign(officialMarks, result.marks);
     calculatedTotal = result.total;
     s.markingNotes = result.notes;
+    (s as any).markBreakdowns = result.points;
   }
 
   s.marks = officialMarks;
@@ -5806,6 +5906,7 @@ function buildStudentResultPayload(a: AssessmentStore, s: LiveStudentSession) {
 
   if (releaseSettings.shareQuestionMarks) {
     studentData.marks = s.marks;
+    studentData.markBreakdowns = (s as any).markBreakdowns;
   }
 
   if (releaseSettings.shareSubmissionsAndAnswers) {
@@ -5815,6 +5916,12 @@ function buildStudentResultPayload(a: AssessmentStore, s: LiveStudentSession) {
   if (releaseSettings.shareTeacherFeedback) {
     studentData.feedback = s.feedback;
     studentData.questionComments = s.questionComments;
+    // Written for the student ("you"), without marker jargon
+    studentData.markingNotes = Object.fromEntries(
+      Object.entries((s as any).markingNotes || {})
+        .filter(([, v]) => typeof v === "string" && (v as string).trim())
+        .map(([k, v]) => [k, studentFriendlyFeedback(String(v), undefined, 0, 1)])
+    );
     studentData.aiDiagnostic = s.aiDiagnostic;
   }
 
