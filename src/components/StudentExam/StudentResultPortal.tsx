@@ -411,9 +411,15 @@ export const StudentResultPortal: React.FC<StudentResultPortalProps> = ({
                                   <span className="font-bold text-amber-900 block uppercase tracking-wider text-[10px]">
                                     Your teacher's comment on this question:
                                   </span>
-                                  <p className="text-amber-950 leading-relaxed whitespace-pre-line text-xs">
-                                    {(studentData as any).questionComments[q.id]}
-                                  </p>
+                                  <ul className="list-disc pl-5 space-y-1 text-amber-950 leading-relaxed text-xs">
+                                    {String((studentData as any).questionComments[q.id])
+                                      .split("\n")
+                                      .map((l: string) => l.replace(/^\s*[•\-*]\s*/, "").trim())
+                                      .filter(Boolean)
+                                      .map((l: string, i: number) => (
+                                        <li key={i}>{l}</li>
+                                      ))}
+                                  </ul>
                                 </div>
                               )}
 

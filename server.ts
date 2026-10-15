@@ -5406,13 +5406,43 @@ function answerAsText(answer: any): string {
   }
 }
 
-async function suggestQuestionComment(task: any, answer: any, awarded: number, maxMarks: number, note: string): Promise<string> {
+/**
+ * Comment for one question as bullet points: one bullet for each mark the student lost,
+ * saying which mark scheme point it was, why it was lost and how to fix it.
+ * Returned as text, one bullet per line ("• ..."), so the teacher can keep or delete each.
+ */
+async function suggestQuestionComment(
+  task: any,
+  answer: any,
+  awarded: number,
+  maxMarks: number,
+  note: string,
+  points: MarkPoint[] = []
+): Promise<string> {
   const answerText = answerAsText(answer).trim();
+  const lost = Math.max(0, Math.round((maxMarks - awarded) * 10) / 10);
+  const asBullets = (items: string[]) =>
+    items
+      .map((b) => String(b || "").replace(/^\s*[•\-*]\s*/, "").replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .map((b) => "• " + b)
+      .join("\n");
   const fallback = () => {
-    if (!answerText) return "You did not answer this question. Read the question carefully and attempt every part - even a partial answer can earn marks.";
+    if (!answerText) return asBullets([`Lost ${lost} mark${lost === 1 ? "" : "s"} - no answer was given. Attempt every part: even a partial answer can earn marks.`]);
+    const missed = (points || []).filter((p) => p.awarded < p.max);
+    if (missed.length) {
+      return asBullets(
+        missed.map((p) => {
+          const n = Math.round((p.max - p.awarded) * 10) / 10;
+          return `Lost ${n} mark${n === 1 ? "" : "s"} - ${p.point}${p.reason ? `: ${p.reason}` : ""}`;
+        })
+      );
+    }
     const cleanNote = String(note || "").replace(/\s*\(Anti-Hardcoding Shield active\)/gi, "").replace(/\s+/g, " ").trim();
-    const why = cleanNote ? `What went wrong: ${cleanNote.slice(0, 400)}` : "Some of the required points are missing.";
-    return `${why} How to improve: compare your answer with the mark scheme points and make sure each required step or idea is clearly included.`;
+    return asBullets([
+      `Lost ${lost} mark${lost === 1 ? "" : "s"}${cleanNote ? ` - ${cleanNote.slice(0, 300)}` : ""}`,
+      "Check your answer against each point in the mark scheme and make sure every required step is included.",
+    ]);
   };
   const ai = getGeminiClient();
   if (!ai) return fallback();
@@ -5453,12 +5483,14 @@ MARKS: ${awarded} out of ${maxMarks}
 AUTOMATIC MARKING NOTE: ${(note || "").slice(0, 800)}
 ${testInfo ? "TEST RESULTS:\n" + testInfo : ""}
 
-Write a comment addressed to the student ("you"), 2-4 short sentences, plain English, no headings, no mark numbers:
-1. What went wrong - specific to THIS student's answer (e.g. the exact line, missing check, wrong output, missing point).
-2. How to improve - one or two concrete actions.
-Do not give away a complete model answer.
+${points && points.length ? "MARK SCHEME POINTS AS MARKED:\n" + points.map((p) => `- ${p.point}: ${p.awarded}/${p.max}${p.reason ? " (" + p.reason + ")" : ""}`).join("\n") : ""}
 
-Return JSON: {"comment": "..."}`;
+The student lost ${lost} mark(s). Write feedback as BULLET POINTS, addressed to the student ("you"), marked against the mark scheme:
+- One bullet for EACH mark (or mark scheme point) that was lost - ${lost} bullet(s) in total, no more.
+- Each bullet: start with "Lost 1 mark - " then the mark scheme point, then exactly why THIS answer did not earn it (name the line, check, output or missing idea), then a short "Fix:" with what to do.
+- One sentence or two per bullet, plain English. No bullets for marks that were earned. Do not give away a complete model answer.
+
+Return JSON: {"bullets": ["Lost 1 mark - ...", "..."]}`;
   try {
     const response = await generateContentWithResilience(ai, {
       contents: prompt,
@@ -5467,8 +5499,9 @@ Return JSON: {"comment": "..."}`;
       perCallTimeoutMs: 30_000,
     });
     const parsed = JSON.parse(response.text?.trim() || "{}");
-    const c = String(parsed.comment || "").trim();
-    return c || fallback();
+    const bullets: string[] = Array.isArray(parsed.bullets) ? parsed.bullets.map(String) : parsed.comment ? [String(parsed.comment)] : [];
+    const text = asBullets(bullets);
+    return text || fallback();
   } catch (err) {
     console.warn("[comments] AI suggestion failed:", (err as any)?.message || err);
     return fallback();
@@ -5509,7 +5542,14 @@ app.post("/api/assessments/:id/suggest-comments", requireTeacher, async (req, re
       const q = targets[i++];
       const max = Number(q.marks) || 0;
       const got = Number((s.marks || {})[q.id] ?? 0);
-      comments[q.id] = await suggestQuestionComment(q, (s.answers || {})[q.id], got, max, (s.markingNotes || {})[q.id] || "");
+      comments[q.id] = await suggestQuestionComment(
+        q,
+        (s.answers || {})[q.id],
+        got,
+        max,
+        (s.markingNotes || {})[q.id] || "",
+        ((s as any).markBreakdowns || {})[q.id] || []
+      );
     }
   };
   await Promise.all(Array.from({ length: Math.min(3, targets.length) }, worker));

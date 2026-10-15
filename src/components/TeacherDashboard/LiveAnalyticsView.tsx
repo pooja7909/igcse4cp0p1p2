@@ -3,6 +3,7 @@ import { Assessment, StudentSession, LiveAssessmentStats, IGCSETask } from "../.
 import { PythonSnippetViewer } from "../PythonSnippetViewer";
 import { QuestionFilesPanel } from "../QuestionFilesPanel";
 import { EditableMarkPoints } from "./EditableMarkPoints";
+import { BulletCommentEditor } from "./BulletCommentEditor";
 import { TeacherPythonRunner } from "./TeacherPythonRunner";
 import { teacherFetch } from "../../utils/teacherAuth";
 import { StudentReflectionSheet } from "../StudentExam/StudentReflectionSheet";
@@ -376,7 +377,7 @@ export const LiveAnalyticsView: React.FC<LiveAnalyticsViewProps> = ({
         setBulkCommentMsg({
           ok: true,
           text: n
-            ? `✓ Wrote comments for ${n} question${n === 1 ? "" : "s"} that lost marks (comments you had already written were kept). Check and edit them below.`
+            ? `✓ Wrote bullet feedback for ${n} question${n === 1 ? "" : "s"} that lost marks (feedback you had already written was kept). Check each bullet below - edit or delete any you do not want.`
             : "This student did not lose marks on any question - nothing to comment on.",
         });
       } else {
@@ -1166,7 +1167,7 @@ ${diag.questionBreakdowns
                     className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold shadow-sm transition-all disabled:opacity-50"
                     title="Write a comment for every question where this student lost marks: what went wrong and how to improve"
                   >
-                    {bulkCommentBusy ? "Writing comments... (about 20s)" : "✨ Comment on questions that lost marks"}
+                    {bulkCommentBusy ? "Writing comments... (about 20s)" : "✨ Bullet feedback for questions that lost marks"}
                   </button>
                   <button
                     onClick={handleRemoveStudent}
@@ -1645,7 +1646,7 @@ ${diag.questionBreakdowns
                           <div className="p-3 rounded-xl border border-amber-200 bg-amber-50/60 space-y-2">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <span className="text-xs font-bold text-amber-900">
-                                Comment for this question (what went wrong & how to improve)
+                                Feedback for this question - one bullet per lost mark (edit or delete any bullet)
                               </span>
                               <button
                                 type="button"
@@ -1653,16 +1654,10 @@ ${diag.questionBreakdowns
                                 disabled={!!busy}
                                 className="px-2.5 py-1 rounded-lg border border-purple-300 bg-white hover:bg-purple-50 text-purple-800 text-[11px] font-bold disabled:opacity-50"
                               >
-                                {busy === "suggest" ? "Writing..." : value ? "✨ Suggest again" : "✨ Suggest a comment"}
+                                {busy === "suggest" ? "Writing..." : value ? "✨ Suggest again" : "✨ Suggest bullets"}
                               </button>
                             </div>
-                            <textarea
-                              value={value}
-                              onChange={(e) => setCommentDrafts((d) => ({ ...d, [qId]: e.target.value }))}
-                              rows={3}
-                              placeholder="e.g. Your loop stops one item early, so the last score is not added. Use range(len(scores)) or loop over the list directly."
-                              className="w-full p-2 text-xs border border-amber-200 rounded-lg bg-white"
-                            />
+                            <BulletCommentEditor value={value} onChange={(t) => setCommentDrafts((d) => ({ ...d, [qId]: t }))} />
                             <div className="flex flex-wrap items-center gap-3">
                               <button
                                 type="button"
@@ -1822,7 +1817,7 @@ ${diag.questionBreakdowns
                             <div className="p-3 rounded-xl border border-amber-200 bg-amber-50/60 space-y-2">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <span className="text-xs font-bold text-amber-900">
-                                  Comment for this question (what went wrong & how to improve)
+                                  Feedback for this question - one bullet per lost mark (edit or delete any bullet)
                                 </span>
                                 <button
                                   type="button"
@@ -1830,16 +1825,10 @@ ${diag.questionBreakdowns
                                   disabled={!!busy}
                                   className="px-2.5 py-1 rounded-lg border border-purple-300 bg-white hover:bg-purple-50 text-purple-800 text-[11px] font-bold disabled:opacity-50"
                                 >
-                                  {busy === "suggest" ? "Writing..." : value ? "✨ Suggest again" : "✨ Suggest a comment"}
+                                  {busy === "suggest" ? "Writing..." : value ? "✨ Suggest again" : "✨ Suggest bullets"}
                                 </button>
                               </div>
-                              <textarea
-                                value={value}
-                                onChange={(e) => setCommentDrafts((d) => ({ ...d, [qId]: e.target.value }))}
-                                rows={3}
-                                placeholder="e.g. Your loop stops one item early, so the last score is not added. Use range(len(scores)) or loop over the list directly."
-                                className="w-full p-2 text-xs border border-amber-200 rounded-lg bg-white"
-                              />
+                              <BulletCommentEditor value={value} onChange={(t) => setCommentDrafts((d) => ({ ...d, [qId]: t }))} />
                               <div className="flex flex-wrap items-center gap-3">
                                 <button
                                   type="button"
