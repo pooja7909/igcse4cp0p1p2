@@ -46,6 +46,8 @@ interface TeacherDashboardProps {
   onOpenHelpGuide?: () => void;
   allowPracticeCopyPaste?: boolean;
   onTogglePracticeCopyPaste?: (val: boolean) => void;
+  practiceOpen?: boolean;
+  onTogglePracticeOpen?: (val: boolean) => void;
 }
 
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
@@ -57,6 +59,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   onOpenHelpGuide,
   allowPracticeCopyPaste,
   onTogglePracticeCopyPaste,
+  practiceOpen,
+  onTogglePracticeOpen,
 }) => {
   const [activeTab, setActiveTab] = useState<"live" | "trends" | "bank" | "add_question" | "builder" | "upload" | "list">("live");
   const [builderInitialMode, setBuilderInitialMode] = useState<"task" | "assessment">("assessment");
@@ -567,6 +571,20 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             }`}
           >
             {allowPracticeCopyPaste ? "Restrict Practice Copy/Paste" : "Allow Practice Copy/Paste"}
+          </button>
+        )}
+        {onTogglePracticeOpen && (
+          <button
+            type="button"
+            onClick={() => onTogglePracticeOpen(!(practiceOpen !== false))}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer ${
+              practiceOpen !== false
+                ? "bg-amber-500 hover:bg-amber-600 text-white"
+                : "bg-emerald-600 hover:bg-emerald-700 text-white"
+            }`}
+            title="Closed: students cannot open the free Practice area at all (useful during assessments)"
+          >
+            {practiceOpen !== false ? "Close Practice portal" : "Practice portal is CLOSED - open it"}
           </button>
         )}
       </div>

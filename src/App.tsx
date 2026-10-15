@@ -70,6 +70,11 @@ export function App() {
         if (params.has("join") || params.has("assessment") || params.has("task") || hash.startsWith("#task=") || hash.startsWith("#assessment=")) {
           return "exam_join";
         }
+        // A formal assessment this browser started and has not submitted yet: go straight back to it
+        const lock = JSON.parse(localStorage.getItem("edexcel_exam_lock") || "null");
+        if (lock && lock.code && new Date(lock.at || 0).toDateString() === new Date().toDateString()) {
+          return "exam_join";
+        }
         const preferred = localStorage.getItem("edexcel_preferred_view");
         if (preferred === "teacher" && (localStorage.getItem("edexcel_teacher_token") || sessionStorage.getItem("edexcel_teacher_token"))) {
           return "teacher";
@@ -106,6 +111,10 @@ export function App() {
     return cached !== null ? cached === "true" : false;
   });
 
+  // Practice portal open/closed, and questions from open assessments (never shown in Practice)
+  const [practiceOpen, setPracticeOpen] = useState<boolean>(true);
+  const [hiddenPracticeIds, setHiddenPracticeIds] = useState<string[]>([]);
+
   useEffect(() => {
     fetch("/api/settings/practice")
       .then((res) => (res.ok ? res.json() : null))
@@ -114,9 +123,24 @@ export function App() {
           setAllowPracticeCopyPaste(data.allowCopyPaste);
           localStorage.setItem("igcse_practice_allow_copy_paste", String(data.allowCopyPaste));
         }
+        if (data && typeof data.practiceOpen === "boolean") setPracticeOpen(data.practiceOpen);
+        if (data && Array.isArray(data.hiddenQuestionIds)) setHiddenPracticeIds(data.hiddenQuestionIds.map(String));
       })
       .catch(() => {});
   }, []);
+
+  const handleTogglePracticeOpen = async (newVal: boolean) => {
+    setPracticeOpen(newVal);
+    try {
+      await teacherFetch("/api/settings/practice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ practiceOpen: newVal }),
+      });
+    } catch (e) {
+      console.warn("Failed to save the Practice portal setting:", e);
+    }
+  };
 
   const handleTogglePracticeCopyPaste = async (newVal: boolean) => {
     setAllowPracticeCopyPaste(newVal);
@@ -164,6 +188,20 @@ export function App() {
     return map;
   }, [units]);
 
+  // What students see in Practice: no questions from open assessments
+  const practiceUnits = useMemo(() => {
+    if (!hiddenPracticeIds.length) return units;
+    const hidden = new Set(hiddenPracticeIds);
+    return units
+      .map((u) => ({ ...u, tasks: u.tasks.filter((t) => !hidden.has(t.id)) }))
+      .filter((u) => u.tasks.length > 0);
+  }, [units, hiddenPracticeIds]);
+  const practiceTasks = useMemo(() => {
+    const map: Record<string, IGCSETask> = {};
+    for (const u of practiceUnits) for (const t of u.tasks) map[t.id] = t;
+    return map;
+  }, [practiceUnits]);
+
   // Load custom questions persisted on the server or in local storage
   useEffect(() => {
     // Load the teacher's data file library so student programs can open past-paper files
@@ -178,7 +216,7 @@ export function App() {
       })
       .catch(() => {});
 
-    fetch("/api/custom-questions")
+    teacherFetch("/api/custom-questions")
       .then((res) => (res.ok ? res.json() : { questions: [] }))
       .then((data) => {
         let serverQuestions: IGCSETask[] = data.questions || [];
@@ -291,7 +329,7 @@ export function App() {
     });
 
     return () => unsubscribeQuestions();
-  }, []);
+  }, [isTeacherAuthenticated]);
 
   // Handle URL query parameters and hash changes (e.g. ?task=CODE or ?assessment=CODE or #task=CODE or #assessment=CODE)
   useEffect(() => {
@@ -313,6 +351,23 @@ export function App() {
         setDedicatedStudentMode({ type: "assessment" });
         setCurrentView("exam_join");
         return;
+      }
+
+      // No link in the address, but this browser is in the middle of a formal assessment
+      // (e.g. the student deleted the end of the link): send them back to it.
+      if (!urlParams.has("teacher")) {
+        try {
+          const lock = JSON.parse(localStorage.getItem("edexcel_exam_lock") || "null");
+          if (lock && lock.code && new Date(lock.at || 0).toDateString() === new Date().toDateString()) {
+            setInitialJoinCode(String(lock.code));
+            setDedicatedStudentMode({ type: lock.type === "task" ? "task" : "assessment" });
+            setCurrentView("exam_join");
+            try {
+              window.history.replaceState({}, document.title, window.location.pathname + `?${lock.type === "task" ? "task" : "assessment"}=${encodeURIComponent(lock.code)}`);
+            } catch (e) {}
+            return;
+          }
+        } catch (e) {}
       }
 
       // 2. Check hash routes: #task=CODE, #assessment=CODE, #join=CODE
@@ -487,6 +542,14 @@ export function App() {
 
     setActiveAssessment(assessment);
     setCurrentStudentSession(studentSession);
+    // Formal assessment in progress: keep this browser on it until it is submitted
+    try {
+      // Stays for the rest of the day, also after submitting, so the student cannot reach the
+      // main site (Practice) from this browser. A teacher signing in here (?teacher) clears it.
+      if (assessment.type !== "task") {
+        localStorage.setItem("edexcel_exam_lock", JSON.stringify({ code: assessment.code, type: "assessment", at: Date.now() }));
+      }
+    } catch (e) {}
     setDedicatedStudentMode({
       type: assessment.type === "task" ? "task" : "assessment",
       title: assessment.title,
@@ -628,10 +691,25 @@ export function App() {
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {/* VIEW 1: Practice Mode (Only available when NOT in dedicated student assignment mode) */}
-        {currentView === "practice" && !dedicatedStudentMode && (
+        {currentView === "practice" && !dedicatedStudentMode && !practiceOpen && !isTeacherAuthenticated && (
+          <div className="max-w-xl mx-auto mt-16 bg-white border border-slate-200 rounded-2xl p-8 text-center space-y-3 shadow-sm">
+            <h2 className="text-lg font-bold text-slate-900">Practice is closed right now</h2>
+            <p className="text-sm text-slate-600">
+              Your teacher has closed the practice area. If you have been given an assessment code or link, use it to join.
+            </p>
+            <button
+              type="button"
+              onClick={() => setCurrentView("exam_join")}
+              className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-sm font-bold"
+            >
+              Join with a code
+            </button>
+          </div>
+        )}
+        {currentView === "practice" && !dedicatedStudentMode && (practiceOpen || isTeacherAuthenticated) && (
           <PracticeMode
-            units={units}
-            allTasks={allTasks}
+            units={isTeacherAuthenticated ? units : practiceUnits}
+            allTasks={isTeacherAuthenticated ? allTasks : practiceTasks}
             onOpenHelpGuide={() => setIsHelpModalOpen(true)}
             allowCopyPaste={allowPracticeCopyPaste}
           />
@@ -650,10 +728,18 @@ export function App() {
                 onOpenHelpGuide={() => setIsHelpModalOpen(true)}
                 allowPracticeCopyPaste={allowPracticeCopyPaste}
                 onTogglePracticeCopyPaste={handleTogglePracticeCopyPaste}
+                practiceOpen={practiceOpen}
+                onTogglePracticeOpen={handleTogglePracticeOpen}
               />
             ) : (
               <TeacherAuthGate
-                onAuthenticated={() => setIsTeacherAuthenticated(true)}
+                onAuthenticated={() => {
+                  // A teacher signed in on this computer: it is no longer locked to a student's assessment
+                  try {
+                    localStorage.removeItem("edexcel_exam_lock");
+                  } catch (e) {}
+                  setIsTeacherAuthenticated(true);
+                }}
                 onCancel={() => setCurrentView("practice")}
               />
             )}

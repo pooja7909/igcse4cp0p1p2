@@ -216,11 +216,26 @@ const SETTINGS_FILE = path.join(DATA_DIR, "system_settings.json");
 
 interface SystemSettings {
   allowPracticeCopyPaste: boolean;
+  /** false = the free Practice portal is closed for students (e.g. during exams) */
+  practiceOpen?: boolean;
 }
 
 const systemSettings: SystemSettings = {
   allowPracticeCopyPaste: false,
+  practiceOpen: true,
 };
+
+/** Questions used in formal assessments that are still open: never shown in free Practice. */
+function questionIdsInLiveAssessments(): string[] {
+  const ids = new Set<string>();
+  for (const a of Object.values(assessmentsDb)) {
+    if (!a || a.type === "task" || a.status === "archived") continue;
+    for (const id of a.questionIds || []) ids.add(String(id));
+    for (const q of a.questions || []) if (q && (q as any).id) ids.add(String((q as any).id));
+    for (const id of Object.keys((a as any).retiredQuestions || {})) ids.add(id); // replaced questions too
+  }
+  return Array.from(ids);
+}
 
 // ==========================================
 // DATA FILE LIBRARY (files student programs can open)
@@ -4470,25 +4485,42 @@ app.get("/api/assessments", (req, res) => {
 app.get("/api/settings/practice", (req, res) => {
   res.json({
     allowCopyPaste: systemSettings.allowPracticeCopyPaste,
+    practiceOpen: systemSettings.practiceOpen !== false,
+    hiddenQuestionIds: questionIdsInLiveAssessments(),
   });
 });
 
 // System settings for Practice Mode: Update practice settings (Protected by Teacher Auth)
 app.post("/api/settings/practice", requireTeacher, (req, res) => {
-  const { allowCopyPaste } = req.body;
+  const { allowCopyPaste, practiceOpen } = req.body;
   if (allowCopyPaste !== undefined) {
     systemSettings.allowPracticeCopyPaste = Boolean(allowCopyPaste);
-    savePersistedSettings();
   }
+  if (practiceOpen !== undefined) {
+    systemSettings.practiceOpen = Boolean(practiceOpen);
+  }
+  savePersistedSettings();
   res.json({
     success: true,
     allowCopyPaste: systemSettings.allowPracticeCopyPaste,
+    practiceOpen: systemSettings.practiceOpen !== false,
   });
 });
 
 // Custom questions endpoint: get all questions created or edited by teacher
 app.get("/api/custom-questions", (req, res) => {
-  res.json({ questions: Object.values(customQuestionsDb) });
+  // Teachers get everything. Students never get questions from open assessments (with
+  // their mark schemes), and nothing at all while the Practice portal is closed.
+  if (isTeacherRequest(req)) {
+    res.json({ questions: Object.values(customQuestionsDb) });
+    return;
+  }
+  if (systemSettings.practiceOpen === false) {
+    res.json({ questions: [] });
+    return;
+  }
+  const hidden = new Set(questionIdsInLiveAssessments());
+  res.json({ questions: Object.values(customQuestionsDb).filter((q: any) => q && !hidden.has(q.id)) });
 });
 
 // Save or update a custom question (Protected)

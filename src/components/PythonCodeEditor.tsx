@@ -721,6 +721,9 @@ export const PythonCodeEditor: React.FC<PythonCodeEditorProps> = ({
             className="absolute inset-0 p-3 font-mono text-xs md:text-sm select-none pointer-events-none overflow-hidden whitespace-pre"
             style={{
               fontFamily: "'JetBrains Mono', Consolas, Monaco, monospace",
+              // Show >= != <= == exactly as typed (no joined symbols like ≥ or ≠)
+              fontVariantLigatures: "none",
+              fontFeatureSettings: '"liga" 0, "calt" 0',
               lineHeight: "24px",
               tabSize: 4,
             }}
@@ -782,6 +785,9 @@ export const PythonCodeEditor: React.FC<PythonCodeEditorProps> = ({
             className="absolute inset-0 w-full h-full p-3 font-mono text-xs md:text-sm bg-transparent text-transparent resize-none overflow-auto whitespace-pre outline-none focus:outline-none"
             style={{
               fontFamily: "'JetBrains Mono', Consolas, Monaco, monospace",
+              // Show >= != <= == exactly as typed (no joined symbols like ≥ or ≠)
+              fontVariantLigatures: "none",
+              fontFeatureSettings: '"liga" 0, "calt" 0',
               lineHeight: "24px",
               tabSize: 4,
               caretColor: isClassic ? "#0f172a" : "#38bdf8",
