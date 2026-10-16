@@ -1,4 +1,5 @@
 import React from "react";
+import { BriefText } from "../BriefText";
 import { IGCSETask, getTaskDifficulty } from "../../types";
 import { PythonSnippetViewer } from "../PythonSnippetViewer";
 import { looksLikeCodingTask, convertToCodeTask } from "../../utils/codingTask";
@@ -184,9 +185,10 @@ export const QuestionPreviewModal: React.FC<QuestionPreviewModalProps> = ({
             <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
               Question Instructions & Brief
             </span>
-            <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm leading-relaxed whitespace-pre-line text-slate-900 font-normal">
-              {task.brief}
-            </div>
+            <BriefText
+              text={task.brief}
+              className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm leading-relaxed text-slate-900 font-normal"
+            />
           </div>
 
           {/* Written question that is really a coding task: offer to convert it */}

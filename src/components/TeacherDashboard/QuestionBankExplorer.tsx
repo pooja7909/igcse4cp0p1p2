@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from "react";
+import { BriefText, briefSummary } from "../BriefText";
 import { IGCSETask, IGCSEUnit, QuestionDifficulty, getTaskDifficulty } from "../../types";
 import { QuestionPreviewModal } from "./QuestionPreviewModal";
 import { SimilarQuestionModal } from "./SimilarQuestionModal";
@@ -764,7 +765,7 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
                     {task.title}
                   </h4>
                   <p className="text-[11px] text-slate-500 line-clamp-2 mt-0.5 mb-2">
-                    {task.brief}
+                    {briefSummary(task.brief)}
                   </p>
 
                   {/* Action row on card */}
@@ -903,9 +904,10 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
               {/* Brief */}
               <div className="space-y-1">
                 <span className="text-xs font-bold text-slate-700 block">Question Specification:</span>
-                <p className="text-xs text-slate-700 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-200">
-                  {previewTask.brief}
-                </p>
+                <BriefText
+                  text={previewTask.brief}
+                  className="text-xs text-slate-700 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-200"
+                />
               </div>
 
               {/* Specific Content by type */}

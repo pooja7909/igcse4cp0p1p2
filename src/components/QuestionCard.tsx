@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { BriefText } from "./BriefText";
 import { IGCSETask, MarkResult } from "../types";
 import { autoMarkTask } from "../utils/autoMarker";
 import { runPython } from "../utils/pythonRunner";
@@ -189,9 +190,7 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
       )}
 
       {/* Question Brief */}
-      <div className="my-5 text-slate-800 text-sm md:text-base leading-relaxed whitespace-pre-line font-normal">
-        {task.brief}
-      </div>
+      <BriefText text={task.brief} className="my-5 text-slate-800 text-sm md:text-base leading-relaxed font-normal" />
 
       {/* Uploaded Past Paper Diagram / Image if present */}
       {task.image && (

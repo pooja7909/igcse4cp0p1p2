@@ -8,6 +8,7 @@ import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
 import { EDEXCEL_2025_PAPER_TASKS, EDEXCEL_2025_COMPANION_TASKS } from "./src/data/edexcel2025PaperQuestions.js";
 import { EDEXCEL_20_MARKER_TASKS } from "./src/data/edexcel20MarkerQuestions.js";
+import { TWENTY_MARK_BANK_TASKS } from "./src/data/twentyMarkBank.js";
 import { INITIAL_UNITS } from "./src/data/initialQuestionBank.js";
 import { SEED_ASSESSMENTS_MAP } from "./src/data/seedAssessments.js";
 import { VIRTUAL_FILES } from "./src/utils/pythonRunner.js";
@@ -31,7 +32,7 @@ const PORT = 3000;
 
 // Master dictionary of all built-in tasks across curriculum modules
 const ALL_BUILTIN_TASKS: Record<string, any> = {};
-for (const task of [...EDEXCEL_2025_PAPER_TASKS, ...EDEXCEL_2025_COMPANION_TASKS, ...EDEXCEL_20_MARKER_TASKS]) {
+for (const task of [...EDEXCEL_2025_PAPER_TASKS, ...EDEXCEL_2025_COMPANION_TASKS, ...EDEXCEL_20_MARKER_TASKS, ...TWENTY_MARK_BANK_TASKS]) {
   if (task && task.id) ALL_BUILTIN_TASKS[task.id] = task;
 }
 for (const unit of INITIAL_UNITS) {

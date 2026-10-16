@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { BriefText } from "../BriefText";
 import { Assessment, StudentSession, LiveAssessmentStats, IGCSETask } from "../../types";
 import { PythonSnippetViewer } from "../PythonSnippetViewer";
 import { QuestionFilesPanel } from "../QuestionFilesPanel";
@@ -1276,7 +1277,7 @@ ${diag.questionBreakdowns
                           <span className="font-bold text-slate-500 uppercase tracking-wider text-[10px] block">
                             Question Brief / Task Specification:
                           </span>
-                          <p className="whitespace-pre-line leading-relaxed font-sans">{task.brief}</p>
+                          <BriefText text={task.brief} className="leading-relaxed font-sans" />
                         </div>
                       )}
 
@@ -1767,7 +1768,7 @@ ${diag.questionBreakdowns
                             {maxM ? ` / ${maxM}` : ""} marks
                           </span>
                         </div>
-                        {task.brief && <p className="whitespace-pre-line text-slate-700 p-2 bg-slate-50 rounded-lg">{task.brief}</p>}
+                        {task.brief && <BriefText text={task.brief} className="text-slate-700 p-2 bg-slate-50 rounded-lg" />}
                         {typeof answer === "string" && (task.type === "code" || /\b(print|input|def |for |while )/.test(answer)) ? (
                           <div className="space-y-2">
                             <PythonSnippetViewer code={answer} title="Student's answer" />

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { BriefText } from "../BriefText";
 import { MarkPointsList } from "../MarkPointsList";
 import {
   CheckCircle2,
@@ -369,7 +370,7 @@ export const StudentResultPortal: React.FC<StudentResultPortalProps> = ({
                             {/* Brief / Task prompt */}
                             <div className="p-3 rounded-xl bg-slate-50 text-slate-700 leading-relaxed">
                               <strong className="block text-slate-900 mb-0.5 font-bold">Question Brief:</strong>
-                              <p className="whitespace-pre-line">{q.brief}</p>
+                              <BriefText text={q.brief} />
                             </div>
 
                             {/* Candidate's submitted response (If shareSubmissionsAndAnswers allowed) */}

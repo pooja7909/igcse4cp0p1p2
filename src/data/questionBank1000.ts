@@ -4,6 +4,7 @@ import { PYTHON_WORKBOOK_UNIT } from "./pythonWorkbookQuestions";
 import { get2025PaperUnits } from "./edexcel2025PaperQuestions";
 import { getArchivedPastPaperUnits } from "./edexcelPastPapersArchive";
 import { get20MarkerUnit } from "./edexcel20MarkerQuestions";
+import { getTwentyMarkBankUnit } from "./twentyMarkBank";
 import { YEAR11_PRACTICE_UNIT } from "./edexcelYear11PracticePaper";
 
 /**
@@ -1312,13 +1313,15 @@ export function getAll1000Units(): IGCSEUnit[] {
     tasks: get20MarkerUnit().tasks.map((t) => ({ ...t, paper: "Paper 2" as const })),
   };
 
+  const twentyMarkBankUnit: IGCSEUnit = getTwentyMarkBankUnit();
+
   const enrichedYear11Unit: IGCSEUnit = {
     ...YEAR11_PRACTICE_UNIT,
     paper: "Paper 2",
     tasks: YEAR11_PRACTICE_UNIT.tasks.map((t) => ({ ...t, paper: "Paper 2" as const })),
   };
 
-  return [...mappedUnits, enrichedWorkbookUnit, ...paper2025Units, ...archivedPastPaperUnits, capstone20MarkerUnit, enrichedYear11Unit];
+  return [...mappedUnits, enrichedWorkbookUnit, ...paper2025Units, ...archivedPastPaperUnits, capstone20MarkerUnit, twentyMarkBankUnit, enrichedYear11Unit];
 }
 
 /**
