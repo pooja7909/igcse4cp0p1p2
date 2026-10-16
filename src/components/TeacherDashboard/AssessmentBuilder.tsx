@@ -18,6 +18,7 @@ import {
   getPastPaperInfo,
   groupPastPapersByYearAndSeries,
   taskSearchText,
+  getTaskPaper,
 } from "../../utils/pastPaperUtils";
 import {
   PlusCircle,
@@ -64,6 +65,8 @@ interface AssessmentBuilderProps {
   onSelectAssessmentToEdit?: (assessmentId: string) => void;
   onQuestionUpdated?: (task: IGCSETask) => void;
   initialMode?: "assessment" | "task";
+  /** Every assessment and task (all teachers), used to colour questions that are already set */
+  usageAssessments?: Assessment[];
 }
 
 export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
@@ -78,6 +81,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
   onSelectAssessmentToEdit,
   onQuestionUpdated,
   initialMode,
+  usageAssessments,
 }) => {
   const isEditMode = !!editingAssessment;
 
@@ -87,20 +91,15 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
   });
   const [title, setTitle] = useState(() => {
     if (editingAssessment?.title) return editingAssessment.title;
-    return initialMode === "task" ? "Classwork Practice Task" : "IGCSE Computer Science Paper 2 Mock";
+    return "";
   });
   const [durationMinutes, setDurationMinutes] = useState(() => {
     if (typeof editingAssessment?.durationMinutes === "number") return editingAssessment.durationMinutes;
     return initialMode === "task" ? 0 : 45;
   });
   const [showScoreImmediately, setShowScoreImmediately] = useState(true);
-  const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([
-    "u01a",
-    "u04a",
-    "u05c",
-    "u10a",
-    "u15a",
-  ]);
+  // A new assessment starts empty: no sample questions
+  const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
   const [editingQuestionTask, setEditingQuestionTask] = useState<IGCSETask | null>(null);
   const [unitFilter, setUnitFilter] = useState<string>("all");
   const [difficultyFilter, setDifficultyFilter] = useState<string>("all");
@@ -222,7 +221,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
     "curriculum" | "past_papers" | "existing_assessments" | "custom"
   >("curriculum");
   const [selectedPastPaperFolder, setSelectedPastPaperFolder] = useState<string>("ALL");
-  const [paperFilter, setPaperFilter] = useState<"all" | "Paper 1" | "Paper 2">("Paper 2");
+  const [paperFilter, setPaperFilter] = useState<"all" | "Paper 1" | "Paper 2">("all");
   const [assessmentSearchQuery, setAssessmentSearchQuery] = useState("");
   const [expandedAssessmentId, setExpandedAssessmentId] = useState<string | null>(null);
 
@@ -565,8 +564,8 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
 
   // Where every question is already used (all other assessments and practice tasks)
   const usageMap = useMemo(
-    () => buildQuestionUsage(allAssessments, editingAssessment?.id),
-    [allAssessments, editingAssessment?.id]
+    () => buildQuestionUsage(usageAssessments && usageAssessments.length ? usageAssessments : allAssessments, editingAssessment?.id),
+    [usageAssessments, allAssessments, editingAssessment?.id]
   );
 
   const filteredUnits = units
@@ -592,9 +591,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
         }
 
         if (paperFilter !== "all" && !wholePaper) {
-          const isP1 = ["U14", "U15", "U16", "U17", "U18", "U19", "U23", "U24", "U25", "U26", "U27", "U28", "U29", "U30", "U31", "U32"].includes(u.code);
-          const unitPaper = u.paper || (isP1 ? "Paper 1" : "Paper 2");
-          if (unitPaper !== paperFilter) return false;
+          if (getTaskPaper(t, u.paper) !== paperFilter) return false;
         }
 
         if (difficultyFilter !== "all" && getTaskDifficulty(t) !== difficultyFilter) return false;
@@ -753,9 +750,6 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
                 setAssignmentMode("assessment");
                 setAllowCopyPaste(false);
                 setShowOperatorToolbar(false);
-                if (title === "Classwork Practice Task" || title.includes("Practice Task")) {
-                  setTitle("IGCSE Computer Science Paper 2 Mock");
-                }
               }}
               className={`p-3.5 rounded-xl border text-left flex items-start gap-3 transition-all ${
                 assignmentMode === "assessment"
@@ -789,9 +783,6 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
                 setAssignmentMode("task");
                 setAllowCopyPaste(true);
                 setShowOperatorToolbar(true);
-                if (title.includes("Mock")) {
-                  setTitle("Classwork Practice Task");
-                }
                 if (durationMinutes === 45) {
                   setDurationMinutes(0);
                 }
@@ -1288,7 +1279,8 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
                           </span>
                         )}
                       </div>
-                      <p className="text-[11px] text-slate-500 truncate mt-0.5">{task.brief}</p>
+                      <p className="text-[11px] text-slate-500 truncate mt-0.5">{briefSummary(task.brief)}</p>
+                      <UsageBadges usage={usageMap[task.id]} />
                     </div>
                   </div>
 
@@ -1434,6 +1426,25 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
             <p className="text-xs text-slate-500 mt-0.5">
               Select questions from Curriculum Topic Units, Past Examination Papers by Year, or your previously created Assessments.
             </p>
+            {/* Paper filter for every tab below */}
+            <div className="flex flex-wrap items-center gap-1.5 mt-2 text-xs">
+              <span className="font-bold text-slate-700">Paper:</span>
+              {(["all", "Paper 1", "Paper 2"] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  data-testid={`builder-paper-${v}`}
+                  onClick={() => setPaperFilter(v)}
+                  className={`px-3 py-1 rounded-lg font-bold border ${
+                    paperFilter === v
+                      ? "bg-slate-900 text-white border-slate-900"
+                      : "bg-white text-slate-700 border-slate-300 hover:bg-slate-100"
+                  }`}
+                >
+                  {v === "all" ? "Both papers" : v === "Paper 1" ? "Paper 1 (theory)" : "Paper 2 (Python)"}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Source Tabs */}
@@ -1816,6 +1827,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
             <div className="space-y-4 max-h-[620px] overflow-y-auto pr-1">
               {filteredPastPaperGroups.map((group) => {
                 const groupTasks = group.tasks.filter((t) => {
+                  if (paperFilter !== "all" && getTaskPaper(t) !== paperFilter) return false;
                   if (!searchQuery.trim()) return true;
                   const q = searchQuery.toLowerCase();
                   return (
@@ -2013,21 +2025,6 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
 
                 {selectionSourceTab === "curriculum" && (
                   <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
-                    Paper
-                    <select
-                      value={paperFilter}
-                      onChange={(e) => setPaperFilter(e.target.value as any)}
-                      className="text-xs py-1.5 px-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 normal-case tracking-normal"
-                    >
-                      <option value="Paper 2">Paper 2 (Python)</option>
-                      <option value="Paper 1">Paper 1 (Theory)</option>
-                      <option value="all">Both papers</option>
-                    </select>
-                  </label>
-                )}
-
-                {selectionSourceTab === "curriculum" && (
-                  <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                     Made by
                     <select
                       value={sourceFilter}
@@ -2109,7 +2106,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
                   sourceFilter !== "all" ||
                   unitFilter !== "all" ||
                   difficultyFilter !== "all" ||
-                  paperFilter !== "Paper 2" ||
+                  paperFilter !== "all" ||
                   searchQuery) && (
                   <button
                     type="button"
@@ -2118,7 +2115,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
                       setSourceFilter("all");
                       setUnitFilter("all");
                       setDifficultyFilter("all");
-                      setPaperFilter("Paper 2");
+                      setPaperFilter("all");
                       setSearchQuery("");
                     }}
                     className="text-[11px] font-bold text-purple-700 hover:text-purple-900 underline"

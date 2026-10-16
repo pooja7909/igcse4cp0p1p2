@@ -11,6 +11,7 @@ import {
   getPastPaperInfo,
   groupPastPapersByYearAndSeries,
   taskSearchText,
+  getTaskPaper,
 } from "../../utils/pastPaperUtils";
 import {
   Search,
@@ -70,7 +71,7 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
   const [selectedUnit, setSelectedUnit] = useState<string>("ALL");
   const [selectedType, setSelectedType] = useState<string>("ALL");
   const [selectedDifficulty, setSelectedDifficulty] = useState<string>("ALL");
-  const [selectedPaper, setSelectedPaper] = useState<"ALL" | "Paper 1" | "Paper 2">("Paper 2");
+  const [selectedPaper, setSelectedPaper] = useState<"ALL" | "Paper 1" | "Paper 2">("ALL");
   const [previewTaskId, setPreviewTaskId] = useState<string>("");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalTask, setModalTask] = useState<IGCSETask | null>(null);
@@ -225,9 +226,7 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
 
       // Paper filter (Paper 1 vs Paper 2)
       if (selectedPaper !== "ALL") {
-        const isP1 = ["U14", "U15", "U16", "U17", "U18", "U19", "U23", "U24", "U25", "U26", "U27", "U28", "U29", "U30", "U31", "U32"].includes(t.unit);
-        const taskPaper = t.paper || (isP1 ? "Paper 1" : "Paper 2");
-        if (taskPaper !== selectedPaper) return false;
+        if (getTaskPaper(t) !== selectedPaper) return false;
       }
 
       if (!matchesUsageFilter(usageFilter, usageMap[t.id], false)) return false;
@@ -359,11 +358,29 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
         </div>
       </div>
 
+      {/* Paper filter: both papers, or click a card to see only that paper */}
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="font-bold text-slate-700">Paper:</span>
+        {(["ALL", "Paper 1", "Paper 2"] as const).map((v) => (
+          <button
+            key={v}
+            type="button"
+            data-testid={`bank-paper-${v}`}
+            onClick={() => setSelectedPaper(v)}
+            className={`px-3 py-1 rounded-lg font-bold border ${
+              selectedPaper === v ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300 hover:bg-slate-100"
+            }`}
+          >
+            {v === "ALL" ? "Both papers" : v === "Paper 1" ? "Paper 1 (theory)" : "Paper 2 (Python)"}
+          </button>
+        ))}
+      </div>
+
       {/* Two Headings: Paper 1 & Paper 2 Selector */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <button
           type="button"
-          onClick={() => setSelectedPaper("Paper 2")}
+          onClick={() => setSelectedPaper(selectedPaper === "Paper 2" ? "ALL" : "Paper 2")}
           className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer ${
             selectedPaper === "Paper 2"
               ? "bg-emerald-950 text-white border-emerald-500 shadow-md ring-2 ring-emerald-500/40"
@@ -400,7 +417,7 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
 
         <button
           type="button"
-          onClick={() => setSelectedPaper("Paper 1")}
+          onClick={() => setSelectedPaper(selectedPaper === "Paper 1" ? "ALL" : "Paper 1")}
           className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer ${
             selectedPaper === "Paper 1"
               ? "bg-slate-900 text-white border-indigo-500 shadow-md ring-2 ring-indigo-500/40"

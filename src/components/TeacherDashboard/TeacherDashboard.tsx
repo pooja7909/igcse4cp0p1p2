@@ -10,6 +10,7 @@ import { QuestionBankExplorer } from "./QuestionBankExplorer";
 import { QRCodeModal } from "../QRCodeModal";
 import { teacherFetch, teacherChangePassword, getStoredTeacherProfile } from "../../utils/teacherAuth";
 import { TeachersPanel } from "./TeachersPanel";
+import { getTaskPaper } from "../../utils/pastPaperUtils";
 import {
   syncAssessmentToFirestore,
   fetchAllAssessmentsFromFirestore,
@@ -66,6 +67,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<"live" | "trends" | "bank" | "add_question" | "builder" | "upload" | "list">("live");
   const [builderInitialMode, setBuilderInitialMode] = useState<"task" | "assessment">("assessment");
+  // Changes every time "Set Practice Task" / "Set In-Class Assessment" is clicked: fresh empty form
+  const [builderNonce, setBuilderNonce] = useState(0);
   const [allAssessments, setAssessments] = useState<Assessment[]>([]);
 
   // Each teacher sees their own assessments by default; "All teachers" shows everyone's.
@@ -88,6 +91,40 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const isMine = (a: Assessment) => (a.ownerId || "t_primary") === myId;
   const assessments = viewScope === "all" ? allAssessments : allAssessments.filter(isMine);
   const [isTeachersModalOpen, setIsTeachersModalOpen] = useState(false);
+
+  // ---- Filters for the assessments list ----
+  const [listSearch, setListSearch] = useState("");
+  const [listPaper, setListPaper] = useState<"all" | "Paper 1" | "Paper 2" | "Both">("all");
+  const [listType, setListType] = useState<"all" | "assessment" | "task">("all");
+  const [listTeacher, setListTeacher] = useState<string>(""); // "" = follow My classes / All teachers
+  const ownerKey = (a: Assessment) => a.ownerId || "t_primary";
+  const ownerLabel = (a: Assessment) => (isMine(a) ? "You" : a.ownerName || "Another teacher");
+  const assessmentPaper = (a: Assessment): "Paper 1" | "Paper 2" | "Both" | "" => {
+    const papers = new Set<string>();
+    for (const id of a.questionIds || []) {
+      const q = (a.questions || []).find((x) => x && x.id === id) || allTasks[id];
+      if (q) papers.add(getTaskPaper(q));
+    }
+    if (papers.size === 0) return "";
+    if (papers.size > 1) return "Both";
+    return papers.has("Paper 1") ? "Paper 1" : "Paper 2";
+  };
+  const teacherOptions = Array.from(
+    new Map(allAssessments.map((a) => [ownerKey(a), ownerLabel(a)] as [string, string])).entries()
+  ).sort((x, y) => (x[1] === "You" ? -1 : y[1] === "You" ? 1 : x[1].localeCompare(y[1])));
+  const listSource =
+    listTeacher === "__all"
+      ? allAssessments
+      : listTeacher
+      ? allAssessments.filter((a) => ownerKey(a) === listTeacher)
+      : assessments;
+  const listedAssessments = listSource.filter((a) => {
+    if (listType !== "all" && (a.type || "assessment") !== listType) return false;
+    if (listPaper !== "all" && assessmentPaper(a) !== listPaper) return false;
+    const q = listSearch.trim().toLowerCase();
+    if (q && ![a.title, a.code, (a as any).classGroup, ownerLabel(a)].some((x) => String(x || "").toLowerCase().includes(q))) return false;
+    return true;
+  });
   const [selectedAssessmentId, setSelectedAssessmentId] = useState<string>("");
   const [projectingAssessment, setProjectingAssessment] = useState<Assessment | null>(null);
   const [editingAssessmentId, setEditingAssessmentId] = useState<string | null>(null);
@@ -379,6 +416,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             onClick={() => {
               setEditingAssessmentId(null);
               setBuilderInitialMode("task");
+              setBuilderNonce((n) => n + 1);
               setActiveTab("builder");
             }}
             className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
@@ -396,6 +434,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             onClick={() => {
               setEditingAssessmentId(null);
               setBuilderInitialMode("assessment");
+              setBuilderNonce((n) => n + 1);
               setActiveTab("builder");
             }}
             className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
@@ -672,6 +711,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       {/* Tab 4: Assessment Builder */}
       {activeTab === "builder" && (
         <AssessmentBuilder
+          // A new key = a fresh, empty form (new assessment) or the chosen assessment loaded
+          key={`${builderInitialMode}-${editingAssessmentId || "new"}-${builderNonce}`}
+          usageAssessments={allAssessments}
           units={units}
           allTasks={allTasks}
           initialMode={builderInitialMode}
@@ -740,11 +782,87 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             </button>
           </div>
 
+          {/* Filters */}
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 p-3 rounded-xl bg-slate-50 border border-slate-200">
+            <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-wide text-slate-500 col-span-2 md:col-span-1">
+              Search
+              <input
+                value={listSearch}
+                onChange={(e) => setListSearch(e.target.value)}
+                placeholder="Title, PIN or class..."
+                className="text-xs py-1.5 px-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 normal-case tracking-normal"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+              Paper
+              <select
+                value={listPaper}
+                onChange={(e) => setListPaper(e.target.value as any)}
+                data-testid="list-paper"
+                className="text-xs py-1.5 px-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 normal-case tracking-normal"
+              >
+                <option value="all">Any paper</option>
+                <option value="Paper 1">Paper 1 (theory)</option>
+                <option value="Paper 2">Paper 2 (Python)</option>
+                <option value="Both">Mixed (both papers)</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+              Type
+              <select
+                value={listType}
+                onChange={(e) => setListType(e.target.value as any)}
+                className="text-xs py-1.5 px-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 normal-case tracking-normal"
+              >
+                <option value="all">Exams and practice</option>
+                <option value="assessment">📝 Formal assessments</option>
+                <option value="task">🧪 Practice tasks</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+              Set by
+              <select
+                value={listTeacher}
+                onChange={(e) => setListTeacher(e.target.value)}
+                data-testid="list-teacher"
+                className="text-xs py-1.5 px-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 normal-case tracking-normal"
+              >
+                <option value="">{viewScope === "all" ? "All teachers" : "Me (My classes)"}</option>
+                {viewScope !== "all" && <option value="__all">All teachers</option>}
+                {teacherOptions.map(([id, name]) => (
+                  <option key={id} value={id}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="flex items-end justify-between gap-2 text-[11px] text-slate-600">
+              <span>
+                Showing <strong>{listedAssessments.length}</strong> of {allAssessments.length}
+              </span>
+              {(listSearch || listPaper !== "all" || listType !== "all" || listTeacher) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setListSearch("");
+                    setListPaper("all");
+                    setListType("all");
+                    setListTeacher("");
+                  }}
+                  className="font-bold text-purple-700 underline"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs border-collapse">
               <thead className="bg-slate-50 text-slate-700 font-semibold uppercase tracking-wider border-b border-slate-200">
                 <tr>
                   <th className="px-4 py-3">Title</th>
+                  <th className="px-3 py-3">Paper / type</th>
                   <th className="px-3 py-3">PIN Code</th>
                   <th className="px-3 py-3">Questions</th>
                   <th className="px-3 py-3">Max Marks</th>
@@ -755,9 +873,50 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {assessments.map((a) => (
+                {listedAssessments.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="px-4 py-8 text-center text-slate-500">
+                      No assessments match these filters.
+                    </td>
+                  </tr>
+                )}
+                {listedAssessments.map((a) => (
                   <tr key={a.id} className="hover:bg-slate-50">
-                    <td className="px-4 py-3 font-bold text-slate-900">{a.title}</td>
+                    <td className="px-4 py-3 font-bold text-slate-900">
+                      {a.title}
+                      {(a as any).classGroup && (
+                        <span className="block text-[10px] font-semibold text-slate-500">{(a as any).classGroup}</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-3">
+                      {(() => {
+                        const paper = assessmentPaper(a);
+                        return (
+                          <div className="flex flex-wrap gap-1">
+                            {paper && (
+                              <span
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                  paper === "Paper 1"
+                                    ? "bg-indigo-50 text-indigo-800 border-indigo-200"
+                                    : paper === "Paper 2"
+                                    ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                                    : "bg-amber-50 text-amber-800 border-amber-200"
+                                }`}
+                              >
+                                {paper === "Both" ? "Mixed" : paper}
+                              </span>
+                            )}
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                a.type === "task" ? "bg-teal-50 text-teal-800 border-teal-200" : "bg-rose-50 text-rose-800 border-rose-200"
+                              }`}
+                            >
+                              {a.type === "task" ? "Practice" : "Exam"}
+                            </span>
+                          </div>
+                        );
+                      })()}
+                    </td>
                     <td className="px-3 py-3 font-mono font-bold text-purple-700">{a.code}</td>
                     <td className="px-3 py-3 text-slate-600">{(a.questionIds || []).length} tasks</td>
                     <td className="px-3 py-3 font-bold text-slate-800">{a.maxMarks}m</td>

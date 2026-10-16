@@ -251,3 +251,16 @@ export function groupPastPapersByYearAndSeries(tasks: IGCSETask[]): PastPaperGro
     return a.session.localeCompare(b.session);
   });
 }
+
+// Topic units examined on Paper 1 (written theory). Everything else is Paper 2 (Python).
+export const PAPER1_UNITS = ["U14", "U15", "U16", "U17", "U18", "U19", "U23", "U24", "U25", "U26", "U27", "U28", "U29", "U30", "U31", "U32"];
+
+/** Which paper a question belongs to: the paper's own name first, then the question, then its topic. */
+export function getTaskPaper(task: IGCSETask, unitPaper?: string): "Paper 1" | "Paper 2" {
+  const text = `${task.paperTitle || ""} ${typeof (task as any).source === "string" ? (task as any).source : ""}`;
+  if (/paper\s*1\b|4cp0\/01/i.test(text)) return "Paper 1";
+  if (/paper\s*2\b|4cp0\/02/i.test(text)) return "Paper 2";
+  if (task.paper === "Paper 1" || task.paper === "Paper 2") return task.paper as any;
+  if (unitPaper === "Paper 1" || unitPaper === "Paper 2") return unitPaper as any;
+  return PAPER1_UNITS.includes(task.unit) ? "Paper 1" : "Paper 2";
+}
