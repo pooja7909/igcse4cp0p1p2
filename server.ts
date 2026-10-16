@@ -1549,6 +1549,7 @@ app.post("/api/convert-question", requireTeacher, async (req, res) => {
         ).join("\n");
 
         const isSimilarMode = mode === "generate_similar";
+        const similarScenario = isSimilarMode ? pickFreshScenario(String(questionText || "")) : "";
 
         const prompt = `You are an expert Pearson Edexcel International GCSE (9-1) Computer Science (4CP0) Chief Examiner for Paper 1 (Principles) and Paper 2 (Application of Computational Thinking).
 A teacher has provided an authentic past examination question and official mark scheme (in text, image, or PDF format).
@@ -1561,7 +1562,10 @@ ${
 1. ANALYZE THE PATTERN: Identify the fundamental computational pattern, algorithmic thinking level, and data structures of the input past paper question and mark scheme (e.g., sentinel while-loop with division-by-zero protection, 2D array score filtering with file output, parallel arrays with unit-prefix conversions like 'C'/'F' or 'K'/'L', bubble sort pass tracing, simulation with conditional multipliers/boosters, or code inspection with misplaced accumulator).
 2. DO NOT MERELY SWAP TRIVIAL VALUES: Do not simply change 'Cairo' to 'Paris' or '50' to '60'. Formulate a fresh, engaging, and authentic real-world examination problem matching the exact cognitive level and curriculum constraints of Pearson Edexcel 4CP0.
 3. DERIVE RIGOROUS TEST VALUES FROM THE PATTERN: Create thorough test cases (normal, boundary, and extreme/erroneous where relevant) with exact expected outputs and mark weightings.
-4. PRODUCE COMPLETE SOLUTION: Ensure Python 3 solutions and starters are completely valid, elegant, and syntax-correct.`
+4. PRODUCE COMPLETE SOLUTION: Ensure Python 3 solutions and starters are completely valid, elegant, and syntax-correct.
+5. USE THIS NEW SCENARIO: "${similarScenario}" (not the paper's own context, and not greenhouses/solar/drones unless that is the scenario given).
+
+${BULLET_BRIEF_RULES}`
     : `CRITICAL DIRECTIVE FOR 'TRANSCRIBE_EXACT_EXAM_QUESTION':
 1. PRESERVE THE QUESTION FIDELITY: Faithfully transcribe the question prompt, starter code, figures, and constraints from the past paper.
 2. DERIVE TEST VALUES DIRECTLY FROM MARK SCHEME: Extract the official mark scheme test values, boundary conditions, and expected outputs into the 'tests' array for code questions or 'questions' for theory/inspect questions.`
@@ -1669,6 +1673,10 @@ Reply STRICTLY with a valid JSON object only (no markdown backticks, no text out
         parsed.custom = true;
         parsed.createdAt = Date.now();
         parsed.generationMode = mode;
+        if (isSimilarMode) {
+          parsed.brief = formatBriefAsBullets(parsed.brief);
+          parsed.scenario = similarScenario;
+        }
 
         customQuestionsDb[parsed.id] = parsed;
         savePersistedQuestions();
@@ -1761,6 +1769,83 @@ Reply STRICTLY with a valid JSON object only (no markdown backticks, no text out
   }
 });
 
+// ---------- Fresh scenarios + bullet-point briefs for "Generate Similar" ----------
+// A different real-world context is chosen every time (recently used ones are skipped),
+// so generated questions don't keep coming back to the same theme.
+const SIMILAR_SCENARIOS: string[] = [
+  "school canteen lunch orders", "library book loans and overdue fines", "cinema ticket booking", "bus fare calculator",
+  "football league points table", "swimming gala race times", "marathon finishing times", "gym membership fees",
+  "pizza delivery orders", "coffee shop loyalty card", "online shop discount codes", "mobile phone data usage",
+  "electricity bill calculator", "car park charges", "taxi fare meter", "train seat reservations",
+  "hotel room bookings", "airport baggage weight check", "weather station rainfall records", "river flood level alerts",
+  "zoo animal feeding schedule", "pet grooming appointments", "vet clinic patient weights", "hospital waiting list",
+  "pharmacy stock levels", "blood donation records", "school attendance register", "exam grade calculator",
+  "student reading log", "spelling test scores", "music streaming playlist", "video game high-score table",
+  "esports tournament brackets", "chess club ratings", "bakery daily sales", "farmers' market stall takings",
+  "recycling centre collection weights", "water usage meter", "bike hire scheme", "electric scooter battery range",
+  "theme park ride queue times", "concert ticket sales", "charity fun-run sponsorship", "school trip payments",
+  "password strength checker", "username generator", "parcel delivery tracking", "warehouse stock reorder",
+  "restaurant table bookings", "fitness step counter", "sleep tracker hours", "plant watering reminder",
+  "aquarium water temperature", "beehive honey production", "fishing boat catch records", "ski resort snow depth",
+  "museum visitor counts", "art competition judging scores", "talent show audience votes", "school election ballot count",
+];
+const recentSimilarScenarios: string[] = [];
+
+function pickFreshScenario(avoidText: string): string {
+  const avoid = String(avoidText || "").toLowerCase();
+  // Scenarios used by recently generated questions (kept in the question bank, so this survives restarts)
+  const recentFromBank = Object.values(customQuestionsDb)
+    .filter((q: any) => q && q.scenario)
+    .sort((a: any, b: any) => (b.createdAt || 0) - (a.createdAt || 0))
+    .slice(0, 25)
+    .map((q: any) => String(q.scenario));
+  const used = new Set([...recentSimilarScenarios, ...recentFromBank]);
+  const mainWord = (sc: string) => sc.split(" ").filter((w) => w.length > 3)[0] || sc;
+  let pool = SIMILAR_SCENARIOS.filter((sc) => !used.has(sc) && !avoid.includes(mainWord(sc).toLowerCase()));
+  if (!pool.length) pool = SIMILAR_SCENARIOS.filter((sc) => !avoid.includes(mainWord(sc).toLowerCase()));
+  if (!pool.length) pool = SIMILAR_SCENARIOS;
+  const picked = pool[Math.floor(Math.random() * pool.length)];
+  recentSimilarScenarios.push(picked);
+  if (recentSimilarScenarios.length > 25) recentSimilarScenarios.shift();
+  return picked;
+}
+
+const BULLET_BRIEF_RULES = `FORMAT OF "brief" (VERY IMPORTANT - students must understand it at a glance):
+- Start with ONE or TWO short sentences that set the scene.
+- Then a line such as "Write a program that:" (or "You must:" for written questions).
+- Then EACH separate task on its own line starting with "• " (bullet). One action per bullet, short and clear (e.g. "• asks the user to enter the number of tickets", "• displays the total cost to 2 decimal places").
+- Put exact prompts/outputs in quotes inside the bullet they belong to.
+- Separate lines with \\n. NEVER write the requirements as one long paragraph.`;
+
+// Safety net: if the AI still returns one long paragraph, split it into bullet points.
+function formatBriefAsBullets(brief: any): string {
+  const text = String(brief || "").replace(/\r\n/g, "\n").trim();
+  if (!text) return text;
+  const lines = text.split("\n").filter((l) => l.trim());
+  const listLines = lines.filter((l) => /^\s*([•\-*]|\d+[.)]|\([a-z0-9]+\))\s+/.test(l));
+  if (listLines.length >= 2) {
+    // Already a list: make every list line a clear bullet.
+    return text
+      .split("\n")
+      .map((l) => l.replace(/^\s*[\-*]\s+/, "• ").replace(/^\s*\d+[.)]\s+/, "• "))
+      .join("\n");
+  }
+  const protectedText = text.replace(/\b(e\.g|i\.e|etc|vs)\./gi, (m) => m.replace(/\./g, "§"));
+  const sentences = protectedText
+    .split(/(?<=[.!?])\s+(?=[A-Z"'“(])/)
+    .map((x) => x.replace(/§/g, ".").trim())
+    .filter(Boolean);
+  if (sentences.length < 3) return text;
+  const isTask = (x: string) =>
+    /\b(must|should|need|needs|write|devise|create|ask|asks|prompt|input|enter|display|displays|output|outputs|print|calculate|store|validate|check|repeat|count|add|use|save|open|read)\b/i.test(x);
+  const firstTask = sentences.findIndex((x, i) => i > 0 && isTask(x));
+  const cut = firstTask > 0 ? Math.min(firstTask, 2) : 1;
+  const intro = sentences.slice(0, cut).join(" ");
+  const tasks = sentences.slice(cut).map((x) => "• " + x.replace(/^(and|then)\s+/i, ""));
+  return `${intro}\n\nYou need to:\n${tasks.join("\n")}`;
+}
+
+
 // ==========================================
 // AI-POWERED SIMILAR QUESTION GENERATOR (PEARSON EDEXCEL 4CP0 SPECIFICATION)
 // Uses Gemini API to create authentic variations of existing tasks in the question bank
@@ -1801,7 +1886,7 @@ app.post("/api/generate-similar-question", requireTeacher, async (req, res) => {
         const variationDirectives: Record<string, string> = {
           parallel: `Create a PARALLEL authentic examination task with the EXACT same cognitive depth and mark weighting (${targetMarks} marks).
 - Identify the core computational pattern (e.g. sentinel while-loop, list traversal, 2D lookup, accumulator with threshold, validation).
-- Transfer it into a FRESH, realistic real-world context (e.g. drone battery monitor, electric vehicle telemetry, smart warehouse inventory, sports tournament timing, wildlife sanctuary tracker, greenhouse temperature regulation).
+- Transfer it into the FRESH real-world scenario given below (SCENARIO TO USE).
 - Do NOT merely change trivial variable names (e.g. 'cat' to 'dog'). Invent an authentic problem scenario with clear user prompts and formatted output specifications.`,
           easier: `Create a FOUNDATIONAL / SCAFFOLDED variant targeted for reinforcement (${targetMarks} marks).
 - Simplify complex nested branching or multi-condition requirements into a clear, direct requirement.
@@ -1826,9 +1911,15 @@ app.post("/api/generate-similar-question", requireTeacher, async (req, res) => {
             ? "inspect"
             : sourceTask.type || "code";
 
+        const scenario = pickFreshScenario(`${sourceTask.title} ${sourceTask.brief}`);
+        (req as any).similarScenario = scenario;
         const prompt = `You are the Pearson Edexcel International GCSE (9-1) Computer Science (4CP0) Chief Examiner for Paper 1 (Principles) and Paper 2 (Application of Computational Thinking).
 
 Your task is to generate a new, authentic, high-quality examination question derived from an existing question bank item.
+
+SCENARIO TO USE: "${scenario}".
+${customInstruction ? "If the teacher directive below names a different theme, use the teacher's theme instead." : ""}
+Do NOT reuse the scenario of the original question, and do NOT use greenhouses, solar panels, drones or sensors unless the scenario above or the teacher asks for it.
 
 ==================================================
 PEARSON EDEXCEL 4CP0 SPECIFICATION CONTEXT:
@@ -1892,6 +1983,9 @@ EXAMINATION REQUIREMENTS FOR 4CP0:
      * STUDENT FREEDOM: Candidates ARE permitted to use max(), min(), sort(), or zfill() if they want and have learned them. Auto-grading test cases and mark schemes MUST evaluate output correctness agnostic of implementation approach (accept both loop-based and built-in methods).
 
 ==================================================
+${BULLET_BRIEF_RULES}
+
+==================================================
 OUTPUT FORMAT:
 Reply with ONLY a valid, raw JSON object (no markdown quotes, no text before or after):
 {
@@ -1904,7 +1998,7 @@ Reply with ONLY a valid, raw JSON object (no markdown quotes, no text before or 
   "marks": ${targetMarks},
   "commandWord": "Devise" | "Explain" | "Complete" | "State",
   "specReference": "Spec ${unitInfo.spec} (${unitInfo.title})",
-  "brief": "Full formatted examination problem brief with bulleted requirements",
+  "brief": "Short scene-setting sentence(s)\\nWrite a program that:\\n• first task\\n• second task",
   "hint": "Pedagogical hint guiding students towards mark scheme requirements",
   "starter": "Starter Python 3 scaffold with candidate header",
   "solution": "Complete working Python 3 reference solution",
@@ -1932,6 +2026,8 @@ Reply with ONLY a valid, raw JSON object (no markdown quotes, no text before or 
         const parsed = JSON.parse(cleanJson);
 
         parsed.id = `c_sim_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
+        parsed.brief = formatBriefAsBullets(parsed.brief);
+        parsed.scenario = customInstruction ? undefined : (req as any).similarScenario;
         parsed.unit = parsed.unit || unitInfo.code;
         parsed.unitName = parsed.unitName || unitInfo.title;
         parsed.marks = Number(parsed.marks) || targetMarks;
@@ -1981,19 +2077,15 @@ Reply with ONLY a valid, raw JSON object (no markdown quotes, no text before or 
 
     // Deterministic syllabus-grounded Pearson Edexcel 4CP0 fallback
     const fallbackSimId = `c_sim_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
-    const domains = [
-      { domain: "Wildlife Camera Trap Battery Monitor", item: "voltage readings", validMsg: "BATTERY LEVEL STABLE:", outputFlag: "WARNING LOW VOLTAGE ALERT:" },
-      { domain: "Autonomous Delivery Drone Cargo Weight", item: "package weights (kg)", validMsg: "PAYLOAD APPROVED:", outputFlag: "OVERWEIGHT DETECTED:" },
-      { domain: "Hydroponics Nutrient pH Balance", item: "acidity readings", validMsg: "OPTIMAL BALANCE:", outputFlag: "BUFFER FLUID REQUIRED:" },
-      { domain: "Smart Greenhouse Solar Array", item: "kilowatt output", validMsg: "SYSTEM ONLINE:", outputFlag: "STORAGE OVERCHARGE:" },
-    ];
-    const picked = domains[Math.floor(Math.random() * domains.length)];
+    const fallbackScenario = pickFreshScenario(`${sourceTask.title} ${sourceTask.brief}`);
+    const niceScenario = fallbackScenario.replace(/\b\w/g, (c: string) => c.toUpperCase());
+    const picked = { domain: niceScenario, item: "values", validMsg: "Total accepted:", outputFlag: "Limit exceeded:" };
 
     const fallbackTask: any = {
       id: fallbackSimId,
       unit: unitInfo.code,
       unitName: unitInfo.title,
-      title: `${sourceTask.title} (4CP0 Variant - ${picked.domain.split(" ")[0]})`,
+      title: `${sourceTask.title} (variant: ${picked.domain})`,
       level: variationMode === "easier" ? "Core" : variationMode === "harder" ? "Extension" : "Exam-style",
       difficulty: preferredDifficulty || (variationMode === "easier" ? "Easy" : variationMode === "harder" ? "Hard" : "Moderate"),
       type: sourceTask.type || "code",
@@ -2006,11 +2098,12 @@ Reply with ONLY a valid, raw JSON object (no markdown quotes, no text before or 
       variationMode,
       parentTaskId: sourceTask.id,
       createdAt: Date.now(),
+      scenario: fallbackScenario,
       modelUsed: "4cp0-rule-engine",
     };
 
     if (sourceTask.type === "code") {
-      fallbackTask.brief = `[Pearson Edexcel 4CP0 Examination Variant - ${picked.domain}]\nDevise a Python 3 program meeting the following specification requirements:\n1. Prompt the user to enter two ${picked.item} with meaningful prompts.\n2. Calculate the combined total of the two readings.\n3. If the total exceeds 100.0, output "${picked.outputFlag}" followed by the total value.\n4. Otherwise, display "${picked.validMsg}" followed by the verified total formatted to one decimal place.${variationMode === "harder" ? "\n5. Validate that neither value is negative; output 'INVALID VALUE' if negative numbers are entered." : ""}`;
+      fallbackTask.brief = `Scenario: ${niceScenario}.\n\nWrite a program that:\n• asks the user to enter two ${picked.item}\n• adds the two values together\n• displays "${picked.outputFlag}" and the total if the total is more than 100.0\n• otherwise displays "${picked.validMsg}" and the total to one decimal place${variationMode === "harder" ? "\n• displays 'INVALID VALUE' if either value is negative" : ""}`;
       fallbackTask.starter = `# Candidate Name:\n# Candidate Number:\n# Pearson Edexcel 4CP0 Python 3 Scaffold\n\ndef main():\n    # Complete your solution below\n    pass\n\nif __name__ == "__main__":\n    main()\n`;
       fallbackTask.starterFileName = sourceTask.starterFileName ? `sim_${sourceTask.starterFileName}` : "task_variant.py";
       fallbackTask.solution = `def main():\n    v1 = float(input("Enter reading 1: "))\n    v2 = float(input("Enter reading 2: "))\n    total = v1 + v2\n    if total > 100.0:\n        print(f"${picked.outputFlag} {total:.1f}")\n    else:\n        print(f"${picked.validMsg} {total:.1f}")\n\nif __name__ == "__main__":\n    main()\n`;
@@ -2026,7 +2119,7 @@ Reply with ONLY a valid, raw JSON object (no markdown quotes, no text before or 
         { id: "MP3", marks: 1, criterion: "Formats output string exactly matching examination test specification" },
       ];
     } else {
-      fallbackTask.brief = `[Pearson Edexcel 4CP0 Companion - ${picked.domain}]\n${sourceTask.brief}`;
+      fallbackTask.brief = formatBriefAsBullets(sourceTask.brief);
       fallbackTask.questions = sourceTask.questions || [];
       fallbackTask.columns = sourceTask.columns;
       fallbackTask.rows = sourceTask.rows;
