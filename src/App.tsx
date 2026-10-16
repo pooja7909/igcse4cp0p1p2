@@ -897,7 +897,7 @@ export function App() {
       <footer className="bg-white border-t border-slate-200 py-4 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-wrap items-center justify-between gap-2">
           <span>
-            Pearson Edexcel International GCSE (9–1) in Computer Science (4CP0) • {Object.keys(allTasks).length} Questions Repository
+            Pearson Edexcel International GCSE (9–1) in Computer Science (4CP0) 
           </span>
           <div className="flex items-center gap-3">
             <span className="font-mono text-[11px] text-slate-400">
