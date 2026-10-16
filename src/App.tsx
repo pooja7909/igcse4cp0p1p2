@@ -13,6 +13,7 @@ import { IGCSEUnit, IGCSETask, Assessment, StudentSession, MarkResult } from "./
 import { setLibraryFiles } from "./utils/pythonRunner";
 import { getTeacherToken, verifyTeacherToken, teacherLogout, teacherFetch, TEACHER_SESSION_EXPIRED_EVENT } from "./utils/teacherAuth";
 import { syncCustomQuestionToFirestore, subscribeToCustomQuestions } from "./firebase";
+import { LearnStudentApp } from "./components/Learn/LearnStudentApp";
 import { AlertTriangle } from "lucide-react";
 
 // ---------- Keeping students on the assessment / task they were sent to ----------
@@ -108,6 +109,14 @@ export function App() {
     return "teacher";
   });
   const [isSpecModalOpen, setIsSpecModalOpen] = useState(false);
+  // Learning Hub student link: ?learn=CODE
+  const [learnCode] = useState<string>(() => {
+    try {
+      return (new URLSearchParams(window.location.search).get("learn") || "").trim().toUpperCase();
+    } catch {
+      return "";
+    }
+  });
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
   const [activeAssessment, setActiveAssessment] = useState<Assessment | null>(null);
   const [currentStudentSession, setCurrentStudentSession] = useState<StudentSession | null>(null);
@@ -748,6 +757,22 @@ export function App() {
     setShowExitConfirmModal(true);
   };
 
+  if (learnCode) {
+    return (
+      <div className="min-h-screen bg-slate-100/70 text-slate-900 flex flex-col font-sans">
+        <header className="bg-white border-b border-slate-200">
+          <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-2">
+            <span className="w-8 h-8 rounded-lg bg-purple-600 text-white flex items-center justify-center font-bold">CS</span>
+            <span className="font-bold text-slate-900">Computer Science Learning Hub</span>
+          </div>
+        </header>
+        <main className="flex-1 w-full px-4 sm:px-6 py-6">
+          <LearnStudentApp code={learnCode} />
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-100/70 text-slate-900 flex flex-col font-sans selection:bg-purple-200">
       <Header
@@ -897,7 +922,7 @@ export function App() {
       <footer className="bg-white border-t border-slate-200 py-4 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-wrap items-center justify-between gap-2">
           <span>
-            Pearson Edexcel International GCSE (9–1) in Computer Science (4CP0) 
+            Pearson Edexcel International GCSE (9–1) in Computer Science (4CP0) • {Object.keys(allTasks).length} Questions Repository
           </span>
           <div className="flex items-center gap-3">
             <span className="font-mono text-[11px] text-slate-400">

@@ -11,6 +11,7 @@ import { QRCodeModal } from "../QRCodeModal";
 import { teacherFetch, teacherChangePassword, getStoredTeacherProfile } from "../../utils/teacherAuth";
 import { TeachersPanel } from "./TeachersPanel";
 import { getTaskPaper } from "../../utils/pastPaperUtils";
+import { LearnTeacherPanel } from "../Learn/LearnTeacherPanel";
 import {
   syncAssessmentToFirestore,
   fetchAllAssessmentsFromFirestore,
@@ -65,7 +66,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   practiceOpen,
   onTogglePracticeOpen,
 }) => {
-  const [activeTab, setActiveTab] = useState<"live" | "trends" | "bank" | "add_question" | "builder" | "upload" | "list">("live");
+  const [activeTab, setActiveTab] = useState<"live" | "trends" | "bank" | "add_question" | "builder" | "upload" | "list" | "learn">("live");
   const [builderInitialMode, setBuilderInitialMode] = useState<"task" | "assessment">("assessment");
   // Changes every time "Set Practice Task" / "Set In-Class Assessment" is clicked: fresh empty form
   const [builderNonce, setBuilderNonce] = useState(0);
@@ -472,6 +473,19 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             <ListOrdered className="w-4 h-4" />
             <span>{viewScope === "all" ? "All Assessments" : "My Assessments"} ({assessments.length})</span>
           </button>
+
+          <button
+            data-testid="teacher-tab-learn"
+            onClick={() => setActiveTab("learn")}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
+              activeTab === "learn"
+                ? "bg-purple-600 text-white shadow-sm shadow-purple-600/20"
+                : "text-indigo-700 hover:text-indigo-950 hover:bg-indigo-50"
+            }`}
+            title="Lessons, practice and quizzes for your classes"
+          >
+            <span>🎓 Learning Hub</span>
+          </button>
         </div>
 
         {/* Right side controls: Assessment Switcher & Lock Console */}
@@ -767,6 +781,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       )}
 
       {/* Tab 6: List All Assessments */}
+      {activeTab === "learn" && <LearnTeacherPanel />}
+
       {activeTab === "list" && (
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden p-6 space-y-4">
           <div className="flex items-center justify-between">

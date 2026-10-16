@@ -12,6 +12,7 @@ import { TWENTY_MARK_BANK_TASKS } from "./src/data/twentyMarkBank.js";
 import { INITIAL_UNITS } from "./src/data/initialQuestionBank.js";
 import { SEED_ASSESSMENTS_MAP } from "./src/data/seedAssessments.js";
 import { VIRTUAL_FILES } from "./src/utils/pythonRunner.js";
+import { registerLearnRoutes, loadLearnData, learnClassesDb, learnProgressDb, learnNeedsFresh } from "./learnServer.js";
 import {
   SyncedCollection,
   isSharedStoreEnabled,
@@ -6571,6 +6572,10 @@ function seedInitialData() {
 
 seedInitialData();
 
+// ---------- Learning Hub (lessons, classes, progress) ----------
+loadLearnData(DATA_DIR);
+registerLearnRoutes(app, { requireTeacher, runPythonTests, defaultFiles: VIRTUAL_FILES });
+
 // ---------- Shared state collections (see serverStore.ts) ----------
 let sharedCollections: SyncedCollection[] | null = null;
 let pullInFlight: Promise<void> | null = null;
@@ -6663,15 +6668,33 @@ function initSharedCollections() {
     }
   );
 
+  const learnClasses = new SyncedCollection(
+    "learn_classes",
+    () => learnClassesDb,
+    (id, value) => {
+      if (value === null) delete learnClassesDb[id];
+      else learnClassesDb[id] = value;
+    }
+  );
+
+  const learnProgress = new SyncedCollection(
+    "learn_progress",
+    () => learnProgressDb,
+    (id, value) => {
+      if (value === null) delete learnProgressDb[id];
+      else learnProgressDb[id] = value;
+    }
+  );
+
   // Order matters: assessments must be pulled before their students.
-  sharedCollections = [assessments, students, questions, teachers, settings, dataFiles];
+  sharedCollections = [assessments, students, questions, teachers, settings, dataFiles, learnClasses, learnProgress];
   for (const c of sharedCollections) c.captureBaseline();
 }
 
 // How long data already in memory is reused before checking the database again.
 // Every check costs at least one Firestore read per collection, and the free plan
 // allows ~50,000 reads a day, so routine requests reuse recent data.
-const HOT_COLLECTIONS = new Set(["assessments", "students"]);
+const HOT_COLLECTIONS = new Set(["assessments", "students", "learn_classes", "learn_progress"]);
 const HOT_TTL_MS = 15_000; // assessments + student progress
 const COLD_TTL_MS = 60_000; // teachers, settings, question bank, data files
 
@@ -6710,6 +6733,8 @@ function needsFreshData(req: express.Request): boolean | "all" {
   // Teacher screens re-check exam data on every request, so a change saved through one
   // server copy (e.g. grade boundaries) never shows the old value from another copy
   if (req.headers.authorization) return true;
+  // Learning Hub student requests: fresh only when the class/student is new to this server copy
+  if (/^\/learn\//.test(req.path)) return learnNeedsFresh(req);
   // Student requests (join, autosave, submit) use data at most 15s old, unless they refer
   // to an assessment or student this server copy hasn't seen yet (checked below).
   const m = req.path.match(/^\/assessments\/([^/]+)/);
