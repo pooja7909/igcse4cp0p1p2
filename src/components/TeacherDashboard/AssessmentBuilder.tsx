@@ -257,8 +257,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
         u.code.startsWith("P2") ||
         u.code.startsWith("P1") ||
         u.code === "Y11" ||
-        u.code.startsWith("PAST") ||
-        u.tasks.some(isPastPaperTask);
+        u.code.startsWith("PAST");
 
       if (isPast) {
         past.push(u);
@@ -583,13 +582,16 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
         );
         const isTeacher = Boolean((t.custom && !isPast) || t.authorName || t.authorId);
 
+        const wholePaper = unitFilter.startsWith("PAPER:");
         if (unitFilter === "all_past_papers") {
           if (!isPast) return false;
+        } else if (wholePaper) {
+          if (!isPast || getPastPaperInfo(t).groupId !== unitFilter.slice(6)) return false;
         } else if (unitFilter !== "all" && u.code !== unitFilter) {
           return false;
         }
 
-        if (paperFilter !== "all") {
+        if (paperFilter !== "all" && !wholePaper) {
           const isP1 = ["U14", "U15", "U16", "U17", "U18", "U19", "U23", "U24", "U25", "U26", "U27", "U28", "U29", "U30", "U31", "U32"].includes(u.code);
           const unitPaper = u.paper || (isP1 ? "Paper 1" : "Paper 2");
           if (unitPaper !== paperFilter) return false;
@@ -2048,6 +2050,17 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
                     className="text-xs py-1.5 px-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 normal-case tracking-normal"
                   >
                     <option value="all">All topics and papers</option>
+                    {pastPaperGroups.some((g) => g.id.startsWith("uploaded_")) && (
+                      <optgroup label="Papers you uploaded">
+                        {pastPaperGroups
+                          .filter((g) => g.id.startsWith("uploaded_"))
+                          .map((g) => (
+                            <option key={g.id} value={`PAPER:${g.id}`}>
+                              {g.paperTitle.replace(/ \(uploaded by you\)$/, "")} ({g.tasks.length})
+                            </option>
+                          ))}
+                      </optgroup>
+                    )}
                     <optgroup label="Past papers & exam-style banks">
                       <option value="all_past_papers">All real past papers</option>
                       {pastPaperUnits.map((u) => (

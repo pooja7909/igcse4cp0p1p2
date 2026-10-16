@@ -219,6 +219,8 @@ interface SystemSettings {
   allowPracticeCopyPaste: boolean;
   /** false = the free Practice portal is closed for students (e.g. during exams) */
   practiceOpen?: boolean;
+  /** Questions teachers deleted, so copies cached in browsers are removed too */
+  deletedQuestionIds?: string[];
 }
 
 const systemSettings: SystemSettings = {
@@ -3115,6 +3117,57 @@ app.post("/api/custom-questions/batch", requireTeacher, (req, res) => {
     return;
   }
   const teacher = (req as any).teacher as TeacherProfile | undefined;
+
+  // Uploading the same paper again REPLACES the earlier copy instead of adding duplicates:
+  // a question with the same paper name and the same label (e.g. "2(b)(i)") keeps its old
+  // id (so assessments that use it get the new version), and old questions from that paper
+  // that are no longer in it are removed unless an assessment uses them.
+  const removedIds: string[] = [];
+  const replacedIds: string[] = [];
+  const batchIds = new Set(tasks.map((t: any) => t && t.id).filter(Boolean));
+  const papers = new Set(
+    tasks
+      .filter((t: any) => t && String(t.id || "").startsWith("q_paper_") && typeof t.source === "string" && t.source.trim())
+      .map((t: any) => t.source.trim().toLowerCase())
+  );
+  if (papers.size) {
+    const usedIds = new Set<string>();
+    for (const a of Object.values(assessmentsDb)) {
+      for (const id of a.questionIds || []) usedIds.add(String(id));
+    }
+    const oldByKey = new Map<string, any>();
+    const oldOfPaper: any[] = [];
+    for (const q of Object.values(customQuestionsDb)) {
+      if (!q || batchIds.has(q.id) || !String(q.id || "").startsWith("q_paper_")) continue;
+      const src = typeof q.source === "string" ? q.source.trim().toLowerCase() : "";
+      if (!papers.has(src)) continue;
+      oldOfPaper.push(q);
+      const key = src + "|" + String(q.paperLabel || q.title || "").toLowerCase();
+      const prev = oldByKey.get(key);
+      // Prefer the copy an assessment uses, otherwise the newest
+      if (!prev || (usedIds.has(q.id) && !usedIds.has(prev.id)) || (!usedIds.has(prev.id) && (q.createdAt || 0) > (prev.createdAt || 0))) {
+        oldByKey.set(key, q);
+      }
+    }
+    const kept = new Set<string>();
+    for (const task of tasks) {
+      if (!task || !String(task.id || "").startsWith("q_paper_") || typeof task.source !== "string") continue;
+      const key = task.source.trim().toLowerCase() + "|" + String(task.paperLabel || task.title || "").toLowerCase();
+      const old = oldByKey.get(key);
+      if (old && !kept.has(old.id)) {
+        kept.add(old.id);
+        replacedIds.push(old.id);
+        task.id = old.id;
+        if (old.createdAt) task.createdAt = old.createdAt;
+      }
+    }
+    for (const q of oldOfPaper) {
+      if (kept.has(q.id) || usedIds.has(q.id)) continue;
+      delete customQuestionsDb[q.id];
+      removedIds.push(q.id);
+    }
+  }
+
   for (const task of tasks) {
     if (!task.id) {
       task.id = "c_" + Date.now().toString(36) + Math.random().toString(36).substring(2, 6);
@@ -3129,7 +3182,47 @@ app.post("/api/custom-questions/batch", requireTeacher, (req, res) => {
     customQuestionsDb[task.id] = task;
   }
   savePersistedQuestions();
-  res.json({ success: true, count: tasks.length, tasks });
+  forgetDeletedQuestions(tasks.map((t: any) => t.id));
+  rememberDeletedQuestions(removedIds);
+  res.json({ success: true, count: tasks.length, tasks, removedIds, replacedIds });
+});
+
+function rememberDeletedQuestions(ids: string[]) {
+  if (!ids.length) return;
+  const list = (systemSettings.deletedQuestionIds || []).filter((x) => !ids.includes(x));
+  systemSettings.deletedQuestionIds = [...list, ...ids].slice(-3000);
+  savePersistedSettings();
+}
+function forgetDeletedQuestions(ids: string[]) {
+  const list = systemSettings.deletedQuestionIds || [];
+  if (!list.length || !ids.some((id) => list.includes(id))) return;
+  systemSettings.deletedQuestionIds = list.filter((x) => !ids.includes(x));
+  savePersistedSettings();
+}
+
+// Delete questions you added (e.g. a paper uploaded twice). Built-in questions can't be deleted.
+// A question that an assessment still uses stays inside that assessment, so results are safe.
+app.post("/api/custom-questions/delete", requireTeacher, (req, res) => {
+  const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
+  const deleted: string[] = [];
+  for (const id of ids) {
+    if (!customQuestionsDb[id] || ALL_BUILTIN_TASKS[id]) continue;
+    const q = customQuestionsDb[id];
+    // Keep a full copy in every assessment that uses it before removing it from the bank
+    for (const a of Object.values(assessmentsDb)) {
+      if (!(a.questionIds || []).includes(id)) continue;
+      const list: any[] = Array.isArray(a.questions) ? a.questions : [];
+      if (!list.some((x: any) => x && x.id === id)) a.questions = [...list, q];
+    }
+    delete customQuestionsDb[id];
+    deleted.push(id);
+  }
+  if (deleted.length) {
+    savePersistedQuestions();
+    savePersistedAssessments();
+    rememberDeletedQuestions(deleted);
+  }
+  res.json({ success: true, deleted });
 });
 
 // Auto-mark written / open response answers against mark scheme
@@ -4659,7 +4752,7 @@ app.get("/api/custom-questions", (req, res) => {
   // Teachers get everything. Students never get questions from open assessments (with
   // their mark schemes), and nothing at all while the Practice portal is closed.
   if (isTeacherRequest(req)) {
-    res.json({ questions: Object.values(customQuestionsDb) });
+    res.json({ questions: Object.values(customQuestionsDb), deletedIds: systemSettings.deletedQuestionIds || [] });
     return;
   }
   if (systemSettings.practiceOpen === false) {
@@ -4685,6 +4778,7 @@ app.post("/api/custom-questions", requireTeacher, (req, res) => {
   }
   customQuestionsDb[task.id] = task;
   savePersistedQuestions();
+  forgetDeletedQuestions([task.id]);
 
   // Also update this question in any assessment that contains it
   let assessmentsChanged = false;

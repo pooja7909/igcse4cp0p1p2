@@ -42,6 +42,7 @@ interface TeacherDashboardProps {
   allTasks: Record<string, IGCSETask>;
   onQuestionAdded: (task: IGCSETask) => void;
   onQuestionsBatchAdded?: (tasks: IGCSETask[]) => void;
+  onQuestionsDeleted?: (ids: string[]) => Promise<number>;
   onLockTeacherMode?: () => void;
   onOpenHelpGuide?: () => void;
   allowPracticeCopyPaste?: boolean;
@@ -55,6 +56,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   allTasks,
   onQuestionAdded,
   onQuestionsBatchAdded,
+  onQuestionsDeleted,
   onLockTeacherMode,
   onOpenHelpGuide,
   allowPracticeCopyPaste,
@@ -654,6 +656,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           onSetAsAssessment={handleQuickSetAsAssessment}
           onQuestionAdded={onQuestionAdded}
           assessments={allAssessments}
+          onQuestionsDeleted={onQuestionsDeleted}
         />
       )}
 

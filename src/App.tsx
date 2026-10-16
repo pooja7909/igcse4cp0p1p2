@@ -244,6 +244,10 @@ export function App() {
       .then((res) => (res.ok ? res.json() : { questions: [] }))
       .then((data) => {
         let serverQuestions: IGCSETask[] = data.questions || [];
+        // Questions a teacher deleted (maybe on another computer) must not come back from this browser's copy
+        const deletedIds: string[] = Array.isArray(data.deletedIds) ? data.deletedIds : [];
+        if (deletedIds.length) removeQuestionsLocally(deletedIds);
+        const deletedSet = new Set(deletedIds);
 
         try {
           const localQ = localStorage.getItem("edexcel_local_custom_questions");
@@ -251,7 +255,7 @@ export function App() {
             const parsed = JSON.parse(localQ);
             if (Array.isArray(parsed)) {
               for (const q of parsed) {
-                if (!serverQuestions.some((sq) => sq.id === q.id)) {
+                if (!deletedSet.has(q.id) && !serverQuestions.some((sq) => sq.id === q.id)) {
                   serverQuestions.push(q);
                 }
               }
@@ -510,19 +514,8 @@ export function App() {
     });
   };
 
-  const handleQuestionsBatchAdded = (newTasks: IGCSETask[]) => {
-    if (!newTasks || newTasks.length === 0) return;
-    // Sync batch questions to Firestore for other devices
-    for (const t of newTasks) {
-      syncCustomQuestionToFirestore(t).catch(() => {});
-    }
-
-    teacherFetch("/api/custom-questions/batch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tasks: newTasks }),
-    }).catch((e) => console.warn("Failed to persist batch custom questions:", e));
-
+  // Put questions into the bank on this screen (and this browser's saved copy)
+  const upsertTasksLocally = (newTasks: IGCSETask[]) => {
     setUnits((prevUnits) => {
       let updatedUnits = [...prevUnits];
       for (const newTask of newTasks) {
@@ -557,6 +550,71 @@ export function App() {
       } catch (e) {}
       return updatedUnits;
     });
+  };
+
+  // Take deleted questions off this screen and out of this browser's saved copy
+  const removeQuestionsLocally = (ids: string[]) => {
+    if (!ids || !ids.length) return;
+    const gone = new Set(ids);
+    setUnits((prevUnits) =>
+      prevUnits
+        .map((u) => (u.tasks.some((t) => gone.has(t.id) && (t.custom || t.id.startsWith("q_paper_") || t.id.startsWith("c_")))
+          ? { ...u, tasks: u.tasks.filter((t) => !(gone.has(t.id) && (t.custom || t.id.startsWith("q_paper_") || t.id.startsWith("c_")))) }
+          : u))
+        .filter((u) => u.tasks.length > 0)
+    );
+    try {
+      const rawLocal = localStorage.getItem("edexcel_local_custom_questions");
+      const existing: IGCSETask[] = rawLocal ? JSON.parse(rawLocal) : [];
+      if (Array.isArray(existing)) {
+        localStorage.setItem(
+          "edexcel_local_custom_questions",
+          JSON.stringify(existing.filter((q) => q && !gone.has(q.id)))
+        );
+      }
+    } catch (e) {}
+  };
+
+  const handleQuestionsBatchAdded = (newTasks: IGCSETask[]) => {
+    if (!newTasks || newTasks.length === 0) return;
+    // Sync batch questions to Firestore for other devices
+    for (const t of newTasks) {
+      syncCustomQuestionToFirestore(t).catch(() => {});
+    }
+    const originalIds = newTasks.map((t) => t.id);
+    upsertTasksLocally(newTasks);
+
+    teacherFetch("/api/custom-questions/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tasks: newTasks }),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data || !Array.isArray(data.tasks)) return;
+        // The same paper uploaded again replaces the old copy: the server may give questions
+        // their earlier ids and remove old ones, so mirror that here (no duplicates).
+        const savedIds = new Set<string>(data.tasks.map((t: IGCSETask) => t.id));
+        const stale = originalIds.filter((id) => !savedIds.has(id));
+        removeQuestionsLocally([...(data.removedIds || []), ...stale]);
+        if (stale.length || (data.replacedIds || []).length) upsertTasksLocally(data.tasks);
+      })
+      .catch((e) => console.warn("Failed to persist batch custom questions:", e));
+  };
+
+  // Delete questions you added (e.g. a paper that was uploaded twice)
+  const handleQuestionsDeleted = async (ids: string[]): Promise<number> => {
+    if (!ids || !ids.length) return 0;
+    const res = await teacherFetch("/api/custom-questions/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    if (!res.ok) throw new Error("The server could not delete the questions. Please try again.");
+    const data = await res.json();
+    const deleted: string[] = Array.isArray(data.deleted) ? data.deleted : [];
+    removeQuestionsLocally(deleted);
+    return deleted.length;
   };
 
   const handleJoinExam = (assessment: Assessment, studentSession: StudentSession) => {
@@ -771,6 +829,7 @@ export function App() {
                 allTasks={allTasks}
                 onQuestionAdded={handleQuestionAdded}
                 onQuestionsBatchAdded={handleQuestionsBatchAdded}
+                onQuestionsDeleted={handleQuestionsDeleted}
                 onLockTeacherMode={handleLockTeacherMode}
                 onOpenHelpGuide={() => setIsHelpModalOpen(true)}
                 allowPracticeCopyPaste={allowPracticeCopyPaste}

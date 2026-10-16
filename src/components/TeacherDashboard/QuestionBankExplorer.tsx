@@ -48,6 +48,7 @@ interface QuestionBankExplorerProps {
   onSetAsAssessment?: (task: IGCSETask) => void;
   onQuestionAdded?: (task: IGCSETask) => void;
   assessments?: Assessment[];
+  onQuestionsDeleted?: (ids: string[]) => Promise<number>;
 }
 
 export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
@@ -58,9 +59,11 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
   onSetAsAssessment,
   onQuestionAdded,
   assessments = [],
+  onQuestionsDeleted,
 }) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [usageFilter, setUsageFilter] = useState<UsageFilter>("all");
+  const [bankMessage, setBankMessage] = useState<string | null>(null);
   const usageMap = useMemo(() => buildQuestionUsage(assessments), [assessments]);
   const [selectedSource, setSelectedSource] = useState<"ALL" | "TEACHER" | "PAST_PAPERS" | "SIMILAR" | "CORE">("ALL");
   const [selectedPastPaperFolder, setSelectedPastPaperFolder] = useState<string>("ALL");
@@ -97,8 +100,7 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
         u.code.startsWith("P2") ||
         u.code.startsWith("P1") ||
         u.code === "Y11" ||
-        u.code.startsWith("PAST") ||
-        u.tasks.some(isPastPaperTask);
+        u.code.startsWith("PAST");
 
       if (isPast) {
         past.push(u);
@@ -161,14 +163,21 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
       return;
     }
 
+    // One whole paper (e.g. a paper you uploaded): show all its questions, Paper 1 and 2
+    if (unitCode.startsWith("PAPER:")) {
+      setSelectedSource("PAST_PAPERS");
+      setSelectedPastPaperFolder(unitCode.slice(6));
+      setSelectedPaper("ALL");
+      return;
+    }
+
     const targetUnit = units.find((u) => u.code === unitCode);
     const isPast =
       targetUnit?.topicGroup === "Past Examination Papers" ||
       unitCode.startsWith("P2") ||
       unitCode.startsWith("P1") ||
       unitCode === "Y11" ||
-      unitCode.startsWith("PAST") ||
-      Boolean(targetUnit?.tasks.some(isPastPaperTask));
+      unitCode.startsWith("PAST");
 
     if (isPast) {
       if (selectedSource === "CORE" || selectedSource === "TEACHER" || selectedSource === "SIMILAR") {
@@ -208,6 +217,8 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
       // Unit filter
       if (selectedUnit === "ALL_PAST_PAPERS") {
         if (!isPast) return false;
+      } else if (selectedUnit.startsWith("PAPER:")) {
+        if (!isPast || getPastPaperInfo(t).groupId !== selectedUnit.slice(6)) return false;
       } else if (selectedUnit !== "ALL" && t.unit !== selectedUnit) {
         return false;
       }
@@ -609,8 +620,27 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
           >
             <option value="ALL">📁 All Units & Past Papers ({allTasksList.length} Qs)</option>
 
+            {pastPaperGroups.some((g) => g.id.startsWith("uploaded_")) && (
+              <optgroup label="📤 Papers you uploaded">
+                {pastPaperGroups
+                  .filter((g) => g.id.startsWith("uploaded_"))
+                  .map((g) => (
+                    <option key={g.id} value={`PAPER:${g.id}`}>
+                      📤 {g.paperTitle.replace(/ \(uploaded by you\)$/, "")} ({g.tasks.length} Qs)
+                    </option>
+                  ))}
+              </optgroup>
+            )}
+
             <optgroup label="📁 Past Examination Papers (By Year & Series)">
               <option value="ALL_PAST_PAPERS">📂 All Past Examination Papers ({sourceCounts.pastPapers} Qs)</option>
+              {pastPaperGroups
+                .filter((g) => !g.id.startsWith("uploaded_"))
+                .map((g) => (
+                  <option key={g.id} value={`PAPER:${g.id}`}>
+                    📅 {g.paperTitle} ({g.tasks.length} Qs)
+                  </option>
+                ))}
               {pastPaperUnits.map((u) => (
                 <option key={u.code} value={u.code}>
                   📅 {u.title} ({u.tasks.length} Qs)
@@ -725,6 +755,94 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
           </div>
         </div>
       )}
+
+      {/* Tidy up a paper you uploaded (duplicates from uploading it twice, or delete it) */}
+      {selectedUnit.startsWith("PAPER:uploaded_") && onQuestionsDeleted && (() => {
+        const groupId = selectedUnit.slice(6);
+        const group = pastPaperGroups.find((g) => g.id === groupId);
+        if (!group) return null;
+        const paperTasks = group.tasks;
+        const usedIds = new Set(
+          paperTasks.filter((t) => (usageMap[t.id]?.exams.length || 0) + (usageMap[t.id]?.practice.length || 0) > 0).map((t) => t.id)
+        );
+        // Same question label twice = duplicate. Keep the one an assessment uses, else the newest.
+        const byLabel = new Map<string, IGCSETask[]>();
+        for (const t of paperTasks) {
+          const key = String((t as any).paperLabel || t.title || t.id).trim().toLowerCase();
+          byLabel.set(key, [...(byLabel.get(key) || []), t]);
+        }
+        const duplicateIds: string[] = [];
+        for (const list of byLabel.values()) {
+          if (list.length < 2) continue;
+          const sorted = [...list].sort((a, b) => {
+            const ua = usedIds.has(a.id) ? 1 : 0;
+            const ub = usedIds.has(b.id) ? 1 : 0;
+            if (ua !== ub) return ub - ua;
+            return (b.createdAt || 0) - (a.createdAt || 0) || String(b.id).localeCompare(String(a.id));
+          });
+          for (const t of sorted.slice(1)) if (!usedIds.has(t.id)) duplicateIds.push(t.id);
+        }
+        const name = group.paperTitle.replace(/ \(uploaded by you\)$/, "");
+        const run = async (ids: string[], what: string) => {
+          if (!ids.length) return;
+          if (!window.confirm(what)) return;
+          try {
+            const n = await onQuestionsDeleted(ids);
+            setBankMessage(`✓ Deleted ${n} question${n === 1 ? "" : "s"}.`);
+            if (ids.length === paperTasks.length) handleSelectUnit("ALL");
+          } catch (e: any) {
+            setBankMessage(e?.message || "Could not delete the questions.");
+          }
+        };
+        return (
+          <div className="p-3 rounded-xl border border-sky-300 bg-sky-50 flex flex-wrap items-center justify-between gap-3 text-xs text-sky-950">
+            <div>
+              <div className="font-bold text-sm">📤 {name}</div>
+              <div>
+                {paperTasks.length} questions
+                {duplicateIds.length > 0 && (
+                  <span className="ml-1 font-bold text-rose-700">• {duplicateIds.length} are duplicates (uploaded more than once)</span>
+                )}
+                {usedIds.size > 0 && <span className="ml-1">• {usedIds.size} used in assessments (these are never deleted)</span>}
+              </div>
+              {bankMessage && <div className="mt-1 font-semibold text-emerald-800">{bankMessage}</div>}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {duplicateIds.length > 0 && (
+                <button
+                  type="button"
+                  data-testid="remove-duplicates"
+                  onClick={() =>
+                    run(
+                      duplicateIds,
+                      `Remove ${duplicateIds.length} duplicate questions from "${name}"?\n\nOne copy of every question is kept (the one used in an assessment, otherwise the newest).`
+                    )
+                  }
+                  className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold"
+                >
+                  Remove {duplicateIds.length} duplicates
+                </button>
+              )}
+              <button
+                type="button"
+                data-testid="delete-paper"
+                onClick={() => {
+                  const ids = paperTasks.filter((t) => !usedIds.has(t.id)).map((t) => t.id);
+                  run(
+                    ids,
+                    `Delete ALL ${ids.length} questions of "${name}" from the Question Bank?` +
+                      (usedIds.size ? `\n\n${usedIds.size} questions used in assessments are kept.` : "") +
+                      "\n\nThis cannot be undone (you can upload the paper again)."
+                  );
+                }}
+                className="px-3 py-1.5 rounded-lg border border-rose-300 bg-white hover:bg-rose-50 text-rose-700 font-bold"
+              >
+                Delete this whole paper
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Main Split Grid: Question List & Live Preview */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
