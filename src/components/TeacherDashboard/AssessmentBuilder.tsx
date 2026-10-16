@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import { IGCSEUnit, IGCSETask, Assessment, getTaskDifficulty } from "../../types";
 import { QuestionPreviewModal } from "./QuestionPreviewModal";
 import { SimilarQuestionModal } from "./SimilarQuestionModal";
@@ -144,9 +144,18 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
   });
   const [expandedMarkSchemeTaskIds, setExpandedMarkSchemeTaskIds] = useState<Record<string, boolean>>({});
 
-  // Sync state when editingAssessment changes
+  // Load the form when a DIFFERENT assessment is opened for editing. Live updates to the
+  // same assessment (students saving work, another device) must not wipe changes the
+  // teacher hasn't saved yet - that used to make newly added questions vanish.
+  const loadedAssessmentIdRef = useRef<string | null>(null);
   useEffect(() => {
-    if (editingAssessment) {
+    if (!editingAssessment) {
+      loadedAssessmentIdRef.current = null;
+      return;
+    }
+    if (loadedAssessmentIdRef.current === editingAssessment.id) return;
+    loadedAssessmentIdRef.current = editingAssessment.id;
+    {
       setTitle(editingAssessment.title || "");
       setAssignmentMode(editingAssessment.type || "assessment");
       setDurationMinutes(
@@ -303,6 +312,33 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
   const addQuestion = (taskId: string) => {
     if (!selectedTaskIds.includes(taskId)) {
       setSelectedTaskIds((prev) => [...prev, taskId]);
+    }
+  };
+
+  // "Save to Bank & Add to Assessment": add the new question AND save the assessment straight away
+  const addQuestionAndSave = async (task: IGCSETask) => {
+    const ids = selectedTaskIds.includes(task.id) ? selectedTaskIds : [...selectedTaskIds, task.id];
+    setSelectedTaskIds(ids);
+    if (!isEditMode || !editingAssessment) {
+      setStatusMessage(`"${task.title}" added to this assessment. Remember to create the assessment to save it.`);
+      return;
+    }
+    const lookup = (id: string): IGCSETask | undefined => (id === task.id ? task : getTask(id));
+    const questions = ids.map(lookup).filter(Boolean) as IGCSETask[];
+    const maxMarks = ids.reduce((acc, id) => acc + (lookup(id)?.marks || 0), 0);
+    try {
+      const res = await teacherFetch(`/api/assessments/${editingAssessment.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ questionIds: ids, questions, maxMarks }),
+      });
+      if (!res.ok) throw new Error("Server error");
+      const data = await res.json();
+      if (onAssessmentUpdated && data.assessment) onAssessmentUpdated(data.assessment);
+      setStatusMessage(`✓ "${task.title}" was added to "${editingAssessment.title}" and saved.`);
+      setTimeout(() => setStatusMessage(null), 5000);
+    } catch (e) {
+      setStatusMessage(`"${task.title}" is added here but NOT saved yet. Click "Save Changes" to keep it.`);
     }
   };
 
@@ -2262,7 +2298,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
           }
         }}
         onAddToAssessment={(task) => {
-          addQuestion(task.id);
+          addQuestionAndSave(task);
         }}
       />
 
