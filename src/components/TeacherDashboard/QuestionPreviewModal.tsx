@@ -55,6 +55,8 @@ export const QuestionPreviewModal: React.FC<QuestionPreviewModalProps> = ({
   onUpdateQuestion,
 }) => {
   const [justConverted, setJustConverted] = React.useState<string | null>(null);
+  const [starterMsg, setStarterMsg] = React.useState<{ id: string; text: string } | null>(null);
+  const pyInputRef = React.useRef<HTMLInputElement>(null);
   if (!isOpen || !task) return null;
   const codingLike = looksLikeCodingTask(task);
   const convert = () => {
@@ -216,6 +218,53 @@ export const QuestionPreviewModal: React.FC<QuestionPreviewModalProps> = ({
           {justConverted === task.id && task.type === "code" && (
             <div className="p-3 rounded-xl text-xs bg-emerald-50 border border-emerald-300 text-emerald-900 font-semibold">
               Done. This is now a programming question with a code window for students.
+            </div>
+          )}
+
+          {/* The Python file students open (e.g. Q06.py with the data in it) */}
+          {onUpdateQuestion && (task.type === "code" || task.type === "theory") && (
+            <div className="p-3 rounded-xl text-xs border border-amber-300 bg-amber-50 text-amber-950 flex flex-wrap items-center justify-between gap-2">
+              <span>
+                <strong>Python file given to students: </strong>
+                {task.starterFileName ? (
+                  <span className="font-mono">{task.starterFileName}</span>
+                ) : task.starter && !/^\s*#\s*write your python 3 (code|solution) here\s*$/i.test(task.starter) ? (
+                  "starter code (no file name)"
+                ) : (
+                  <span className="font-semibold text-rose-700">none yet - upload the .py file from the paper so students get its data</span>
+                )}
+                {starterMsg && starterMsg.id === task.id && (
+                  <span className="block mt-1 font-semibold text-emerald-800">{starterMsg.text}</span>
+                )}
+              </span>
+              <input
+                ref={pyInputRef}
+                type="file"
+                accept=".py,.txt,text/x-python,text/plain"
+                className="hidden"
+                data-testid="starter-file-input"
+                onChange={async (e) => {
+                  const f = e.target.files && e.target.files[0];
+                  e.target.value = "";
+                  if (!f) return;
+                  const text = (await f.text()).replace(/\r\n/g, "\n");
+                  onUpdateQuestion({ ...task, starter: text, starterFileName: f.name });
+                  setStarterMsg({
+                    id: task.id,
+                    text:
+                      task.type === "code"
+                        ? `Saved. Students now start with ${f.name}.`
+                        : `Saved. Students get ${f.name} when they open the code window. Use "Make this a programming question" to open it for them straight away.`,
+                  });
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => pyInputRef.current?.click()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold shrink-0"
+              >
+                <Code className="w-3.5 h-3.5" /> {task.starterFileName ? "Replace .py file" : "Upload .py file"}
+              </button>
             </div>
           )}
 

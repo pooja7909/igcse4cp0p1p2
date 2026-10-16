@@ -2391,6 +2391,13 @@ function assemblePaper(opts: PaperOpts, outline: any, outlineQs: any[], results:
     const unitObj = IGCSE_UNITS.find((u) => u.code === unitCode);
     const items: any[] = Array.isArray(qr.items) ? qr.items : [];
 
+    // The teacher's .py file for this question (Q06.py, Q6.py, question6.py ...), if uploaded
+    const qInt = parseInt(qNum, 10);
+    const matchedStarter = (Array.isArray(opts.starterFiles) ? opts.starterFiles : []).find((sf: any) => {
+      const m = String(sf?.name || "").match(/(\d+)/);
+      return m && parseInt(m[1], 10) === qInt && typeof sf?.code === "string";
+    });
+
     items.forEach((it, ii) => {
       const label = String(it.label || `${qNum}(${String.fromCharCode(97 + ii)})`);
       const marks = Math.max(1, Math.round(Number(it.marks) || 1));
@@ -2468,6 +2475,12 @@ function assemblePaper(opts: PaperOpts, outline: any, outlineQs: any[], results:
           task.manualReview = true;
           task.hint = "This question was a drawing task on the paper; answer it in words.";
         }
+      }
+      // Use the teacher's own .py file exactly as uploaded (data and all), never an AI copy of it.
+      // Written items keep it too, so the code window / "Make this a programming question" start from it.
+      if (matchedStarter && (task.type === "code" || looksLikeProgrammingItem(it) || items.length === 1 || /\bQ\d+\b|\.py\b|code/i.test(task.brief))) {
+        task.starter = String(matchedStarter.code);
+        task.starterFileName = String(matchedStarter.name);
       }
       tasks.push(task);
     });
