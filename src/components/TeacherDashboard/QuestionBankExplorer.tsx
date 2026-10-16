@@ -1,7 +1,8 @@
 import React, { useState, useMemo } from "react";
 import { BriefText, briefSummary } from "../BriefText";
-import { IGCSETask, IGCSEUnit, QuestionDifficulty, getTaskDifficulty } from "../../types";
+import { IGCSETask, IGCSEUnit, QuestionDifficulty, getTaskDifficulty, Assessment } from "../../types";
 import { QuestionPreviewModal } from "./QuestionPreviewModal";
+import { buildQuestionUsage, matchesUsageFilter, usageStripeClass, UsageBadges, UsageLegend, UsageFilter } from "./QuestionUsage";
 import { SimilarQuestionModal } from "./SimilarQuestionModal";
 import { PythonSnippetViewer } from "../PythonSnippetViewer";
 import { teacherFetch } from "../../utils/teacherAuth";
@@ -46,6 +47,7 @@ interface QuestionBankExplorerProps {
   onSetAsTask?: (task: IGCSETask) => void;
   onSetAsAssessment?: (task: IGCSETask) => void;
   onQuestionAdded?: (task: IGCSETask) => void;
+  assessments?: Assessment[];
 }
 
 export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
@@ -55,8 +57,11 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
   onSetAsTask,
   onSetAsAssessment,
   onQuestionAdded,
+  assessments = [],
 }) => {
   const [searchQuery, setSearchQuery] = useState("");
+  const [usageFilter, setUsageFilter] = useState<UsageFilter>("all");
+  const usageMap = useMemo(() => buildQuestionUsage(assessments), [assessments]);
   const [selectedSource, setSelectedSource] = useState<"ALL" | "TEACHER" | "PAST_PAPERS" | "SIMILAR" | "CORE">("ALL");
   const [selectedPastPaperFolder, setSelectedPastPaperFolder] = useState<string>("ALL");
   const [selectedUnit, setSelectedUnit] = useState<string>("ALL");
@@ -214,6 +219,7 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
         if (taskPaper !== selectedPaper) return false;
       }
 
+      if (!matchesUsageFilter(usageFilter, usageMap[t.id], false)) return false;
       if (selectedType !== "ALL" && t.type !== selectedType) return false;
       if (selectedDifficulty !== "ALL" && getTaskDifficulty(t) !== selectedDifficulty) return false;
       if (searchQuery.trim()) {
@@ -228,7 +234,18 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
       }
       return true;
     });
-  }, [allTasksList, selectedSource, selectedPastPaperFolder, selectedUnit, selectedPaper, selectedType, selectedDifficulty, searchQuery]);
+  }, [allTasksList, selectedSource, selectedPastPaperFolder, selectedUnit, selectedPaper, selectedType, selectedDifficulty, searchQuery, usageFilter, usageMap]);
+
+  const usageCounts = useMemo(() => {
+    let exam = 0;
+    let practice = 0;
+    for (const t of allTasksList) {
+      const u = usageMap[t.id];
+      if (u?.exams.length) exam++;
+      if (u?.practice.length) practice++;
+    }
+    return { exam, practice };
+  }, [allTasksList, usageMap]);
 
   const fileHandlingCount = useMemo(() => {
     return allTasksList.filter(
@@ -505,6 +522,29 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
         </div>
       </div>
 
+      {/* Where each question is already used */}
+      <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-white border border-slate-200 rounded-xl">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-bold text-slate-700 mr-1">Where used:</span>
+          {([
+            ["all", "All questions", "bg-slate-900 text-white", "bg-white text-slate-700 border border-slate-200 hover:bg-slate-100"],
+            ["unused", "Not used yet", "bg-slate-700 text-white", "bg-white text-slate-700 border border-slate-200 hover:bg-slate-100"],
+            ["exam", `📝 In a formal assessment (${usageCounts.exam})`, "bg-rose-600 text-white", "bg-white text-rose-800 border border-rose-300 hover:bg-rose-50"],
+            ["practice", `🧪 In a practice task (${usageCounts.practice})`, "bg-teal-600 text-white", "bg-white text-teal-800 border border-teal-300 hover:bg-teal-50"],
+          ] as [UsageFilter, string, string, string][]).map(([val, label, on, off]) => (
+            <button
+              key={val}
+              type="button"
+              onClick={() => setUsageFilter(val)}
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${usageFilter === val ? on + " shadow-sm" : off}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <UsageLegend />
+      </div>
+
       {/* Difficulty & Topic Filter Controls */}
       <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl">
         <div className="flex flex-wrap items-center gap-2">
@@ -721,7 +761,7 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
                 <div
                   key={task.id}
                   onClick={() => setPreviewTaskId(task.id)}
-                  className={`p-3 rounded-xl border text-left cursor-pointer transition-all ${
+                  className={`p-3 rounded-xl border text-left cursor-pointer transition-all ${usageStripeClass(usageMap[task.id])} ${
                     isSelected
                       ? "bg-purple-50 border-purple-400 shadow-sm"
                       : "bg-slate-50/60 border-slate-200 hover:bg-slate-100"
@@ -767,6 +807,9 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
                   <p className="text-[11px] text-slate-500 line-clamp-2 mt-0.5 mb-2">
                     {briefSummary(task.brief)}
                   </p>
+                  <div className="-mt-1 mb-2">
+                    <UsageBadges usage={usageMap[task.id]} />
+                  </div>
 
                   {/* Action row on card */}
                   <div className="pt-2 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-1 text-[11px]">

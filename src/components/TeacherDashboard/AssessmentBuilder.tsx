@@ -1,6 +1,8 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { IGCSEUnit, IGCSETask, Assessment, getTaskDifficulty } from "../../types";
 import { QuestionPreviewModal } from "./QuestionPreviewModal";
+import { briefSummary } from "../BriefText";
+import { buildQuestionUsage, matchesUsageFilter, usageStripeClass, UsageBadges, UsageLegend, UsageFilter } from "./QuestionUsage";
 import { SimilarQuestionModal } from "./SimilarQuestionModal";
 import { ManualQuestionBuilder } from "./ManualQuestionBuilder";
 import { PythonSnippetViewer } from "../PythonSnippetViewer";
@@ -103,6 +105,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
   const [unitFilter, setUnitFilter] = useState<string>("all");
   const [difficultyFilter, setDifficultyFilter] = useState<string>("all");
   const [sourceFilter, setSourceFilter] = useState<"all" | "teacher" | "past_papers" | "similar">("all");
+  const [usageFilter, setUsageFilter] = useState<UsageFilter>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -561,6 +564,12 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
     }
   };
 
+  // Where every question is already used (all other assessments and practice tasks)
+  const usageMap = useMemo(
+    () => buildQuestionUsage(allAssessments, editingAssessment?.id),
+    [allAssessments, editingAssessment?.id]
+  );
+
   const filteredUnits = units
     .map((u) => ({
       ...u,
@@ -587,6 +596,8 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
         }
 
         if (difficultyFilter !== "all" && getTaskDifficulty(t) !== difficultyFilter) return false;
+
+        if (!matchesUsageFilter(usageFilter, usageMap[t.id], selectedTaskIds.includes(t.id))) return false;
 
         if (sourceFilter === "teacher") {
           if (!isTeacher) return false;
@@ -1863,7 +1874,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
                         return (
                           <div
                             key={t.id}
-                            className={`p-3 rounded-xl border transition-all flex items-start gap-3 ${
+                            className={`p-3 rounded-xl border transition-all flex items-start gap-3 ${usageStripeClass(usageMap[t.id])} ${
                               isSelected
                                 ? "bg-blue-50/80 border-blue-300 shadow-xs"
                                 : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60"
@@ -1893,7 +1904,8 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
                                   {t.marks}m
                                 </span>
                               </div>
-                              <p className="text-[11px] text-slate-500 truncate mt-0.5">{t.brief}</p>
+                              <p className="text-[11px] text-slate-500 truncate mt-0.5">{briefSummary(t.brief)}</p>
+                              <UsageBadges usage={usageMap[t.id]} />
 
                               <div className="flex items-center justify-between gap-2 mt-2 pt-1 border-t border-slate-100">
                                 <div className="flex items-center gap-1.5 flex-wrap">
@@ -1953,101 +1965,154 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
         {/* TAB 3 & 4: CURRICULUM TOPIC UNITS & CUSTOM BANK */}
         {(selectionSourceTab === "curriculum" || selectionSourceTab === "custom") && (
           <div className="space-y-4">
-            {/* Filter Controls Row */}
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <BookOpen className="w-5 h-5 text-emerald-600" />
-                <div>
-                  <h4 className="font-bold text-slate-900 text-sm">
-                    {selectionSourceTab === "custom"
-                      ? "Custom Teacher Uploads & Similar Questions"
-                      : "Curriculum Topic Units (U01–U32)"}
-                  </h4>
-                  <p className="text-xs text-slate-500">
-                    Search and select questions aligned with Pearson Edexcel Computer Science.
-                  </p>
+            {/* Filter Controls */}
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <BookOpen className="w-5 h-5 text-emerald-600" />
+                  <div>
+                    <h4 className="font-bold text-slate-900 text-sm">
+                      {selectionSourceTab === "custom"
+                        ? "Your uploads & similar questions"
+                        : "Question bank"}
+                    </h4>
+                    <p className="text-xs text-slate-500">
+                      Showing <strong>{filteredUnits.reduce((n, u) => n + u.tasks.length, 0)}</strong> questions. Tick a question to add it.
+                    </p>
+                  </div>
                 </div>
-              </div>
-
-              <div className="flex items-center gap-3 w-full sm:w-auto flex-wrap">
-                <div className="relative flex-1 sm:w-64">
+                <div className="relative w-full sm:w-72">
                   <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
                   <input
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search tasks by keyword or code..."
-                    className="w-full pl-9 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 focus:bg-white focus:outline-none"
+                    placeholder="Search by keyword, title or file name..."
+                    className="w-full pl-9 pr-3 py-2 text-xs border border-slate-200 rounded-lg bg-slate-50 focus:bg-white focus:outline-none"
                   />
                 </div>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 p-3 rounded-xl bg-slate-50 border border-slate-200">
+                <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                  Where used
+                  <select
+                    value={usageFilter}
+                    onChange={(e) => setUsageFilter(e.target.value as UsageFilter)}
+                    className="text-xs py-1.5 px-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 normal-case tracking-normal"
+                  >
+                    <option value="all">Everywhere</option>
+                    <option value="unused">Not used yet</option>
+                    <option value="exam">📝 In a formal assessment</option>
+                    <option value="practice">🧪 In a practice task</option>
+                    <option value="this">✔ In this assessment</option>
+                  </select>
+                </label>
 
                 {selectionSourceTab === "curriculum" && (
-                  <select
-                    value={paperFilter}
-                    onChange={(e) => setPaperFilter(e.target.value as any)}
-                    className="text-xs py-1.5 px-2.5 border border-slate-200 rounded-lg bg-slate-50 focus:bg-white focus:outline-none font-semibold text-slate-800"
-                  >
-                    <option value="Paper 2">💻 Paper 2 (Onscreen Python)</option>
-                    <option value="Paper 1">📄 Paper 1 (Written Theory)</option>
-                    <option value="all">🌐 All Papers</option>
-                  </select>
+                  <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                    Paper
+                    <select
+                      value={paperFilter}
+                      onChange={(e) => setPaperFilter(e.target.value as any)}
+                      className="text-xs py-1.5 px-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 normal-case tracking-normal"
+                    >
+                      <option value="Paper 2">Paper 2 (Python)</option>
+                      <option value="Paper 1">Paper 1 (Theory)</option>
+                      <option value="all">Both papers</option>
+                    </select>
+                  </label>
                 )}
 
                 {selectionSourceTab === "curriculum" && (
-                  <select
-                    value={sourceFilter}
-                    onChange={(e) => setSourceFilter(e.target.value as any)}
-                    className="text-xs py-1.5 px-2.5 border border-slate-200 rounded-lg bg-slate-50 focus:bg-white focus:outline-none font-semibold text-slate-800"
-                  >
-                    <option value="all">All Sources</option>
-                    <option value="past_papers">Past Papers & 2025 Series</option>
-                    <option value="teacher">Teacher Uploads & Custom</option>
-                    <option value="similar">AI Generated Similar</option>
-                  </select>
+                  <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                    Made by
+                    <select
+                      value={sourceFilter}
+                      onChange={(e) => setSourceFilter(e.target.value as any)}
+                      className="text-xs py-1.5 px-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 normal-case tracking-normal"
+                    >
+                      <option value="all">Anyone</option>
+                      <option value="past_papers">Real past papers</option>
+                      <option value="teacher">Teachers (uploads & own)</option>
+                      <option value="similar">AI "Generate Similar"</option>
+                    </select>
+                  </label>
                 )}
 
-                <select
-                  value={unitFilter}
-                  onChange={(e) => setUnitFilter(e.target.value)}
-                  className="text-xs py-1.5 px-2.5 border border-slate-200 rounded-lg bg-slate-50 focus:bg-white focus:outline-none max-w-xs font-semibold text-slate-800"
-                >
-                  <option value="all">All Units & Past Papers</option>
-                  <optgroup label="📁 Past Examination Papers">
-                    <option value="all_past_papers">📂 All Past Papers</option>
-                    {pastPaperUnits.map((u) => (
-                      <option key={u.code} value={u.code}>
-                        📅 {u.title} ({u.tasks.length} Qs)
-                      </option>
-                    ))}
-                  </optgroup>
-                  <optgroup label="📚 Curriculum Topic Units">
-                    {curriculumUnits.map((u) => (
-                      <option key={u.code} value={u.code}>
-                        {u.code}: {u.title} ({u.tasks.length} Qs)
-                      </option>
-                    ))}
-                  </optgroup>
-                  {customUnits.length > 0 && (
-                    <optgroup label="🛠️ Custom & Teacher Units">
-                      {customUnits.map((u) => (
+                <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-wide text-slate-500 col-span-2 md:col-span-1 lg:col-span-2">
+                  Topic / paper
+                  <select
+                    value={unitFilter}
+                    onChange={(e) => setUnitFilter(e.target.value)}
+                    className="text-xs py-1.5 px-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 normal-case tracking-normal"
+                  >
+                    <option value="all">All topics and papers</option>
+                    <optgroup label="Past papers & exam-style banks">
+                      <option value="all_past_papers">All real past papers</option>
+                      {pastPaperUnits.map((u) => (
                         <option key={u.code} value={u.code}>
-                          {u.code}: {u.title} ({u.tasks.length} Qs)
+                          {u.title} ({u.tasks.length})
                         </option>
                       ))}
                     </optgroup>
-                  )}
-                </select>
+                    <optgroup label="Topics (U01–U32)">
+                      {curriculumUnits.map((u) => (
+                        <option key={u.code} value={u.code}>
+                          {u.code}: {u.title} ({u.tasks.length})
+                        </option>
+                      ))}
+                    </optgroup>
+                    {customUnits.length > 0 && (
+                      <optgroup label="Your own units">
+                        {customUnits.map((u) => (
+                          <option key={u.code} value={u.code}>
+                            {u.code}: {u.title} ({u.tasks.length})
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                  </select>
+                </label>
 
-                <select
-                  value={difficultyFilter}
-                  onChange={(e) => setDifficultyFilter(e.target.value)}
-                  className="text-xs py-1.5 px-2.5 border border-slate-200 rounded-lg bg-slate-50 focus:bg-white focus:outline-none font-semibold text-slate-800"
-                >
-                  <option value="all">All Difficulties</option>
-                  <option value="Easy">🟢 Easy</option>
-                  <option value="Moderate">🟡 Moderate</option>
-                  <option value="Hard">🟣 Hard</option>
-                </select>
+                <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                  Difficulty
+                  <select
+                    value={difficultyFilter}
+                    onChange={(e) => setDifficultyFilter(e.target.value)}
+                    className="text-xs py-1.5 px-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 normal-case tracking-normal"
+                  >
+                    <option value="all">Any</option>
+                    <option value="Easy">🟢 Easy</option>
+                    <option value="Moderate">🟡 Moderate</option>
+                    <option value="Hard">🟣 Hard</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <UsageLegend showThis />
+                {(usageFilter !== "all" ||
+                  sourceFilter !== "all" ||
+                  unitFilter !== "all" ||
+                  difficultyFilter !== "all" ||
+                  paperFilter !== "Paper 2" ||
+                  searchQuery) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUsageFilter("all");
+                      setSourceFilter("all");
+                      setUnitFilter("all");
+                      setDifficultyFilter("all");
+                      setPaperFilter("Paper 2");
+                      setSearchQuery("");
+                    }}
+                    className="text-[11px] font-bold text-purple-700 hover:text-purple-900 underline"
+                  >
+                    Clear filters
+                  </button>
+                )}
               </div>
             </div>
 
@@ -2126,7 +2191,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
                           return (
                             <div
                               key={t.id}
-                              className={`p-3 rounded-xl border transition-all flex items-start gap-3 ${
+                              className={`p-3 rounded-xl border transition-all flex items-start gap-3 ${usageStripeClass(usageMap[t.id])} ${
                                 isSelected
                                   ? "bg-purple-50/80 border-purple-300 shadow-sm"
                                   : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60"
@@ -2160,7 +2225,8 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
                                   </span>
                                 </div>
 
-                                <p className="text-[11px] text-slate-500 line-clamp-1 mt-0.5">{t.brief}</p>
+                                <p className="text-[11px] text-slate-500 line-clamp-1 mt-0.5">{briefSummary(t.brief)}</p>
+                                <UsageBadges usage={usageMap[t.id]} />
 
                                 <div className="flex items-center justify-between gap-2 mt-2">
                                   <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-slate-400">

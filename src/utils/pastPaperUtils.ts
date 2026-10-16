@@ -15,7 +15,9 @@ export interface PastPaperGroup {
  */
 export function isPastPaperTask(task: IGCSETask): boolean {
   if (!task) return false;
-  if (task.paperTitle || task.examBoard || task.paper) return true;
+  // Note: task.paper ("Paper 1"/"Paper 2") and examBoard are set on EVERY bank question, so
+  // they do not mean the question came from a real past paper.
+  if (task.paperTitle) return true;
   if (task.year !== undefined && task.year > 2000) return true;
   if (task.session) return true;
   if (task.source && (task.source.paper || task.source.year || task.source.session)) return true;
@@ -37,7 +39,7 @@ export function isPastPaperTask(task: IGCSETask): boolean {
 
   const uName = (task.unitName || "").toLowerCase();
   if (
-    uName.includes("paper") ||
+    uName.includes("past paper") ||
     uName.includes("past exam") ||
     uName.includes("summer 202") ||
     uName.includes("autumn 202") ||
@@ -192,9 +194,22 @@ export function getPastPaperInfo(task: IGCSETask): {
     };
   }
 
-  // Uploaded or Custom past paper
-  const yearMatch = text.match(/\b(20\d\d)\b/);
-  const detectedYear = task.year || (yearMatch ? parseInt(yearMatch[1], 10) : 2025);
+  // Uploaded or Custom past paper. Only look for the year in the paper's own name (not in
+  // the question title - "2048 items" is not a year), and never accept a future year.
+  const paperText = `${task.paperTitle || ""} ${task.session || ""} ${(task.source && (task.source as any).year) || ""}`;
+  const yearMatch = paperText.match(/\b(20[0-4]\d)\b/);
+  const thisYear = new Date().getFullYear();
+  let detectedYear = task.year || (yearMatch ? parseInt(yearMatch[1], 10) : 0);
+  if (!detectedYear || detectedYear > thisYear || detectedYear < 2000) detectedYear = 0;
+  if (!detectedYear) {
+    return {
+      year: 0,
+      session: "Other",
+      seriesLabel: "Other papers",
+      paperTitle: task.paperTitle || task.unitName || "Other exam-style questions",
+      groupId: "other_papers_" + String(task.paperTitle || task.unitName || "misc").toLowerCase().replace(/[^a-z0-9]+/g, "_"),
+    };
+  }
   const session = text.includes("nov") ? "November" : text.includes("jan") ? "January" : "June";
   const title = task.paperTitle || task.unitName || `Pearson Edexcel Past Paper (${detectedYear})`;
 

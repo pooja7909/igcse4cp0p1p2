@@ -653,6 +653,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           onSetAsTask={handleQuickSetAsTask}
           onSetAsAssessment={handleQuickSetAsAssessment}
           onQuestionAdded={onQuestionAdded}
+          assessments={allAssessments}
         />
       )}
 
