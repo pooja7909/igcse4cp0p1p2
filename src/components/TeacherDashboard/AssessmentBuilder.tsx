@@ -2239,6 +2239,14 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
         onGenerateSimilar={(task) => handleOpenSimilarModal(task)}
         onNextQuestion={handleNextPreview}
         onPrevQuestion={handlePrevPreview}
+        onUpdateQuestion={
+          onQuestionUpdated
+            ? (updated) => {
+                onQuestionUpdated(updated);
+                setPreviewTask(updated);
+              }
+            : undefined
+        }
         hasPrev={previewTaskIndex > 0}
         hasNext={previewTaskIndex >= 0 && previewTaskIndex < allVisibleTasks.length - 1}
       />

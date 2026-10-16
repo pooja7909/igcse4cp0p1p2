@@ -1455,7 +1455,9 @@ ${diag.questionBreakdowns
                           ) : null}
                         </div>
 
-                        {task?.type === "code" ? (
+                        {task?.type === "code" ||
+                        (typeof answer === "string" &&
+                          /(^|\n)\s*(def |for |while |import |print\(|\w+\s*=\s*input\()/.test(answer)) ? (
                           typeof answer === "string" && answer.trim().length > 0 ? (
                             <div className="space-y-2">
                               <PythonSnippetViewer code={answer} title="Student Python Submission" />

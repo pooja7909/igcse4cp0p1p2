@@ -4,6 +4,7 @@ import { autoMarkTask } from "../utils/autoMarker";
 import { runPython } from "../utils/pythonRunner";
 import { PythonCodeEditor } from "./PythonCodeEditor";
 import { QuestionFilesPanel } from "./QuestionFilesPanel";
+import { looksLikeCodingTask, starterForCodeWindow, DRAWING_HINT } from "../utils/codingTask";
 import { PythonSnippetViewer } from "./PythonSnippetViewer";
 import { AiPracticeScaffoldPanel } from "./StudentExam/AiPracticeScaffoldPanel";
 import {
@@ -19,6 +20,7 @@ import {
   ArrowUpDown,
   BookOpen,
   Award,
+  Type,
 } from "lucide-react";
 
 interface QuestionCardProps {
@@ -51,6 +53,17 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
   const [isMarking, setIsMarking] = useState(false);
   const [markResult, setMarkResult] = useState<MarkResult | null>(null);
 
+  // Written questions that are really programming tasks (often past-paper uploads) get a
+  // code window. It opens by itself when the question says to write/amend/save code, and
+  // students can open or close it on any written question.
+  const codingLike = looksLikeCodingTask(task);
+  const answerLooksLikeCode =
+    typeof studentAnswer === "string" && /(^|\n)\s*(def |for |while |if |import |print\(|\w+\s*=\s*input\()/.test(studentAnswer);
+  const [codeWindowOpen, setCodeWindowOpen] = useState<boolean>(codingLike || answerLooksLikeCode);
+  const showCodeEditor = task.type === "code" || (task.type === "theory" && codeWindowOpen);
+  // Don't tell students to "answer in words" when the question is really a coding task.
+  const visibleHint = codingLike && task.hint === DRAWING_HINT ? "" : task.hint;
+
   // Clear console output and inputs for testing whenever the student moves to a new question
   useEffect(() => {
     setConsoleOutput("");
@@ -60,6 +73,8 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
     setMarkResult(null);
     setShowHint(false);
     setSortStep(0);
+    setCodeWindowOpen(codingLike || answerLooksLikeCode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task.id]);
 
   // Sorting visualiser state
@@ -67,7 +82,13 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
 
   // Code editor text
   const currentCode =
-    typeof studentAnswer === "string" ? studentAnswer : task.starter || "# Write your Python 3 solution here\n";
+    task.type === "code"
+      ? typeof studentAnswer === "string"
+        ? studentAnswer
+        : task.starter || "# Write your Python 3 solution here\n"
+      : typeof studentAnswer === "string" && studentAnswer.trim()
+      ? studentAnswer
+      : starterForCodeWindow(task);
 
   const handleRunCode = async () => {
     setIsRunning(true);
@@ -147,7 +168,7 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
             {task.marks} {task.marks === 1 ? "Mark" : "Marks"}
           </span>
-          {mode === "practice" && task.hint && (
+          {mode === "practice" && visibleHint && (
             <button
               onClick={() => setShowHint(!showHint)}
               className="inline-flex items-center gap-1 text-xs font-medium text-amber-700 hover:text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-2.5 py-1 rounded-lg transition-colors"
@@ -160,10 +181,10 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
       </div>
 
       {/* Hint Alert */}
-      {showHint && task.hint && (
+      {showHint && visibleHint && (
         <div className="mt-4 p-3.5 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900 flex items-start gap-2.5">
           <HelpCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-          <p>{task.hint}</p>
+          <p>{visibleHint}</p>
         </div>
       )}
 
@@ -209,13 +230,43 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
       <QuestionFilesPanel task={task} />
 
       {/* Type-Specific Interactive Inputs */}
-      {/* 1. CODE QUESTION */}
-      {task.type === "code" && (
+      {/* Code window switch for written questions */}
+      {task.type === "theory" && (
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          {codeWindowOpen ? (
+            <button
+              type="button"
+              data-testid="close-code-window"
+              onClick={() => setCodeWindowOpen(false)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold"
+            >
+              <Type className="w-3.5 h-3.5" /> Switch to a text box
+            </button>
+          ) : (
+            <button
+              type="button"
+              data-testid="open-code-window"
+              onClick={() => setCodeWindowOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold shadow-sm"
+            >
+              <Code2 className="w-3.5 h-3.5" /> Open code window
+            </button>
+          )}
+          <span className="text-[11px] text-slate-500">
+            {codeWindowOpen
+              ? "Write and run your Python code here. Your code is saved as your answer."
+              : "Need to write or amend a program? Open the code window."}
+          </span>
+        </div>
+      )}
+
+      {/* 1. CODE QUESTION (or a written question with the code window open) */}
+      {showCodeEditor && (
         <div className="space-y-4 my-4">
           <PythonCodeEditor
             value={currentCode}
             onChange={(val) => onAnswerChange(val)}
-            starterCode={task.starter}
+            starterCode={task.type === "code" ? task.starter : starterForCodeWindow(task)}
             onRun={handleRunCode}
             isRunning={isRunning}
             minHeight="280px"
@@ -480,7 +531,7 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
       )}
 
       {/* 6. THEORY / FREE RESPONSE */}
-      {task.type === "theory" && (
+      {task.type === "theory" && !codeWindowOpen && (
         <div className="space-y-2 my-4">
           <label className="text-xs font-semibold text-slate-700">Your Answer (marked against criteria):</label>
           <textarea

@@ -98,13 +98,14 @@ export function App() {
         if (lock && lock.code && new Date(lock.at || 0).toDateString() === new Date().toDateString()) {
           return "exam_join";
         }
-        const preferred = localStorage.getItem("edexcel_preferred_view");
-        if (preferred === "teacher" && (localStorage.getItem("edexcel_teacher_token") || sessionStorage.getItem("edexcel_teacher_token"))) {
-          return "teacher";
+        // Free Practice area: ?practice
+        if (params.has("practice") || params.get("view") === "practice" || hash === "#practice") {
+          return "practice";
         }
       }
     } catch (e) {}
-    return "practice";
+    // The site opens on the teacher page (sign-in screen until a teacher signs in)
+    return "teacher";
   });
   const [isSpecModalOpen, setIsSpecModalOpen] = useState(false);
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
@@ -357,7 +358,15 @@ export function App() {
   // Whatever way a locked student ends up on the main site (deleting the link, "Back to
   // Practice", the menu), send them back to their assessment or task.
   useEffect(() => {
-    if (currentView !== "practice" || isTeacherAuthenticated) return;
+    if (isTeacherAuthenticated) return;
+    if (currentView !== "practice" && currentView !== "teacher") return;
+    // Someone who typed ?teacher on purpose may sign in (that is how a teacher unlocks a computer)
+    if (currentView === "teacher") {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        if (params.has("teacher") || window.location.hash === "#teacher" || window.location.hash === "#staff") return;
+      } catch (e) {}
+    }
     const lock = readExamLock();
     if (!lock) return;
     setInitialJoinCode(lock.code);
@@ -625,7 +634,7 @@ export function App() {
       teacherLogout();
     } catch (e) {}
     setIsTeacherAuthenticated(false);
-    setCurrentView("practice");
+    setCurrentView("teacher");
   };
 
   const performExitExam = (targetView: AppView = "exam_join") => {

@@ -1103,6 +1103,14 @@ export const QuestionBankExplorer: React.FC<QuestionBankExplorerProps> = ({
           }}
           onNextQuestion={handleNextModal}
           onPrevQuestion={handlePrevModal}
+          onUpdateQuestion={
+            onQuestionAdded
+              ? (updated) => {
+                  onQuestionAdded(updated);
+                  setModalTask(updated);
+                }
+              : undefined
+          }
           hasNext={currentModalIndex < filteredTasks.length - 1}
           hasPrev={currentModalIndex > 0}
         />

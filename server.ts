@@ -2123,6 +2123,35 @@ function friendlyGeminiError(err: any): string {
   return msg;
 }
 
+// Spot past-paper items that are really programming tasks (Paper 2 style).
+function looksLikeProgrammingItem(it: any): boolean {
+  const text = [it?.title, it?.stem, it?.question].filter(Boolean).map(String).join("\n");
+  const codeText = String(it?.code || "") + "\n" + String(it?.starter || "");
+  if (/#\s*write your code/i.test(codeText)) return true;
+  const patterns = [
+    /save your (amended |completed |finished )?(code|program)/i,
+    /\bQ\d+\s*FINISHED\b/i,
+    /\bQ\d+\.py\b/i,
+    /\bopen (the )?(file |program )?Q\d+/i,
+    /\bamend (the |this )?(code|program)/i,
+    /\b(complete|correct|extend|modify|fix) (the |this )?(code|program)\b/i,
+    /\bwrite (a |an |the |your )?(python )?(program|code|function|subprogram|procedure)\b/i,
+  ];
+  if (!patterns.some((re) => re.test(text))) return false;
+  if (/\b(draw|sketch|flowchart|diagram|logic circuit|graph)\b/i.test(text) && !/save your|FINISHED|\.py\b/i.test(text)) return false;
+  return true;
+}
+
+function stripListingLineNumbers(code: string): string {
+  const lines = code.replace(/\r\n/g, "\n").split("\n");
+  const nonEmpty = lines.filter((l) => l.trim());
+  const numbered = nonEmpty.filter((l) => /^\s*\d+(\s|$)/.test(l));
+  if (nonEmpty.length && numbered.length / nonEmpty.length >= 0.8) {
+    return lines.map((l) => l.replace(/^\s*\d+( |\t)?/, "")).join("\n");
+  }
+  return code;
+}
+
 const PAPER_ITEM_RULES = `ITEM TYPES - choose the one that lets the answer be marked automatically in a web app:
 - "mcq": a single "cross one box" question. Provide "options" (the option texts WITHOUT the A/B/C/D letters) and "answerIndex" (0-based index of the correct option from the mark scheme).
 - "tick_table": a table where the candidate ticks one column per row (e.g. Compiler/Interpreter, RAM/ROM). Provide "tickColumns" (column headings) and "tickRows": [{ "statement": "...", "answerIndex": 0-based column index }]. Copy the mark scheme rule for how many correct rows earn how many marks into "markThresholds": an array where entry k is the number of correct rows needed for k+1 marks (e.g. [2,4,5] means 2 rows = 1 mark, 4 rows = 2 marks, 5 rows = 3 marks). If each row is worth 1 mark use [1,2,...].
@@ -2131,6 +2160,7 @@ const PAPER_ITEM_RULES = `ITEM TYPES - choose the one that lets the answer be ma
 - "extended": levels-based extended writing (e.g. "Discuss..." 6-mark questions). Put the indicative content AND the level descriptors in "markScheme".
 - "drawing": the candidate must draw (graph, flowchart, diagram). Rewrite "question" so it can be answered in text (e.g. "Describe your flowchart step by step, including each decision and its Yes/No branches"), keep the original requirement in "stem", and set "manualReview": true.
 - "code": the candidate writes a program. Provide "starter", "solution" (working Python 3), and "tests": [{ "in": [input lines], "out": "exact expected output", "m": marks }] where the test marks add up to the item's marks.
+- IMPORTANT: any item where the candidate opens, amends, completes, corrects or writes a program (e.g. "Open Q03.py", "Amend the code", "Save your amended code as Q03FINISHED") is ALWAYS "code", never "drawing" or "short". Put the program they are given into "starter" exactly as it should be typed (no line numbers), and leave "code" empty.
 
 FOR EVERY ITEM ALSO PROVIDE:
 - "label": the exact paper reference, e.g. "1(a)(i)", "4(c)(iii)".
@@ -2327,6 +2357,16 @@ function assemblePaper(opts: PaperOpts, outline: any, outlineQs: any[], results:
         task.starter = String(it.starter || "");
         task.solution = String(it.solution || "");
         task.tests = Array.isArray(it.tests) ? it.tests : [];
+        if (Object.keys(paperDataFiles).length) task.dataFiles = { ...paperDataFiles };
+      } else if (looksLikeProgrammingItem(it)) {
+        // The AI sometimes classes "amend this program / save as Q03FINISHED" as drawing or
+        // written. Students must get a code window for these.
+        task.type = "code";
+        task.starter = String(it.starter || "") || stripListingLineNumbers(String(it.code || ""));
+        task.solution = String(it.solution || "");
+        task.tests = Array.isArray(it.tests) ? it.tests : [];
+        delete task.code;
+        delete task.codeTitle;
         if (Object.keys(paperDataFiles).length) task.dataFiles = { ...paperDataFiles };
       } else {
         task.type = "theory";

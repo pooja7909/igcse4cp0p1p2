@@ -1,6 +1,7 @@
 import React from "react";
 import { IGCSETask, getTaskDifficulty } from "../../types";
 import { PythonSnippetViewer } from "../PythonSnippetViewer";
+import { looksLikeCodingTask, convertToCodeTask } from "../../utils/codingTask";
 import {
   X,
   Eye,
@@ -33,6 +34,8 @@ interface QuestionPreviewModalProps {
   onPrevQuestion?: () => void;
   hasPrev?: boolean;
   hasNext?: boolean;
+  // Saves an edited copy of the question (used to turn a written question into a programming one)
+  onUpdateQuestion?: (task: IGCSETask) => void;
 }
 
 export const QuestionPreviewModal: React.FC<QuestionPreviewModalProps> = ({
@@ -48,8 +51,22 @@ export const QuestionPreviewModal: React.FC<QuestionPreviewModalProps> = ({
   onPrevQuestion,
   hasPrev = false,
   hasNext = false,
+  onUpdateQuestion,
 }) => {
+  const [justConverted, setJustConverted] = React.useState<string | null>(null);
   if (!isOpen || !task) return null;
+  const codingLike = looksLikeCodingTask(task);
+  const convert = () => {
+    if (!onUpdateQuestion) return;
+    const ok = window.confirm(
+      "Make this a programming question?\n\nStudents will get a Python code window with the program as starter code. " +
+        "It will be marked against the mark scheme by AI. Any assessment that uses this question gets the change too. " +
+        "Answers already submitted are not changed."
+    );
+    if (!ok) return;
+    onUpdateQuestion(convertToCodeTask(task));
+    setJustConverted(task.id);
+  }
 
   const getTypeIcon = () => {
     switch (task.type) {
@@ -171,6 +188,34 @@ export const QuestionPreviewModal: React.FC<QuestionPreviewModalProps> = ({
               {task.brief}
             </div>
           </div>
+
+          {/* Written question that is really a coding task: offer to convert it */}
+          {task.type === "theory" && onUpdateQuestion && (
+            <div
+              className={`p-3 rounded-xl text-xs flex flex-wrap items-center justify-between gap-2 border ${
+                codingLike ? "bg-sky-50 border-sky-300 text-sky-950" : "bg-slate-50 border-slate-200 text-slate-700"
+              }`}
+            >
+              <span>
+                {codingLike
+                  ? "This looks like a programming question, but it is saved as a written answer. Students can open a code window themselves, or you can make it a programming question."
+                  : "Should students write Python code for this question? Make it a programming question so they get the code window straight away."}
+              </span>
+              <button
+                type="button"
+                data-testid="convert-to-code"
+                onClick={convert}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-800 text-white font-bold shrink-0"
+              >
+                <Code2 className="w-3.5 h-3.5" /> Make this a programming question
+              </button>
+            </div>
+          )}
+          {justConverted === task.id && task.type === "code" && (
+            <div className="p-3 rounded-xl text-xs bg-emerald-50 border border-emerald-300 text-emerald-900 font-semibold">
+              Done. This is now a programming question with a code window for students.
+            </div>
+          )}
 
           {/* Hint if present */}
           {task.hint && (
