@@ -15,6 +15,29 @@ import { getTeacherToken, verifyTeacherToken, teacherLogout, teacherFetch, TEACH
 import { syncCustomQuestionToFirestore, subscribeToCustomQuestions } from "./firebase";
 import { AlertTriangle } from "lucide-react";
 
+// ---------- Keeping students on the assessment / task they were sent to ----------
+// Opening a teacher's link (?task=CODE or ?assessment=CODE) locks this browser to it for the
+// rest of the day, also after submitting, so students cannot reach the main site (Practice)
+// by deleting the end of the link. A teacher signing in on this computer clears it.
+type ExamLockInfo = { code: string; type: "task" | "assessment"; at: number };
+function readExamLock(): ExamLockInfo | null {
+  try {
+    const lock = JSON.parse(localStorage.getItem("edexcel_exam_lock") || "null");
+    if (lock && lock.code && new Date(lock.at || 0).toDateString() === new Date().toDateString()) return lock;
+  } catch (e) {}
+  return null;
+}
+function setExamLock(code: string, type: "task" | "assessment") {
+  try {
+    if (code) localStorage.setItem("edexcel_exam_lock", JSON.stringify({ code, type, at: Date.now() }));
+  } catch (e) {}
+}
+function clearExamLock() {
+  try {
+    localStorage.removeItem("edexcel_exam_lock");
+  } catch (e) {}
+}
+
 export function App() {
   const [units, setUnits] = useState<IGCSEUnit[]>(() => {
     // 1. Always load the full authoritative 1,000+ curriculum bank (including U11 Text File Handling)
@@ -331,6 +354,20 @@ export function App() {
     return () => unsubscribeQuestions();
   }, [isTeacherAuthenticated]);
 
+  // Whatever way a locked student ends up on the main site (deleting the link, "Back to
+  // Practice", the menu), send them back to their assessment or task.
+  useEffect(() => {
+    if (currentView !== "practice" || isTeacherAuthenticated) return;
+    const lock = readExamLock();
+    if (!lock) return;
+    setInitialJoinCode(lock.code);
+    setDedicatedStudentMode({ type: lock.type });
+    setCurrentView("exam_join");
+    try {
+      window.history.replaceState({}, document.title, window.location.pathname + `?${lock.type}=${encodeURIComponent(lock.code)}`);
+    } catch (e) {}
+  }, [currentView, isTeacherAuthenticated]);
+
   // Handle URL query parameters and hash changes (e.g. ?task=CODE or ?assessment=CODE or #task=CODE or #assessment=CODE)
   useEffect(() => {
     const parseUrlRoute = () => {
@@ -343,6 +380,7 @@ export function App() {
         setInitialJoinCode(taskParam.trim().toUpperCase());
         setDedicatedStudentMode({ type: "task" });
         setCurrentView("exam_join");
+        setExamLock(taskParam.trim().toUpperCase(), "task");
         return;
       }
 
@@ -350,6 +388,7 @@ export function App() {
         setInitialJoinCode(assessmentParam.trim().toUpperCase());
         setDedicatedStudentMode({ type: "assessment" });
         setCurrentView("exam_join");
+        setExamLock(assessmentParam.trim().toUpperCase(), "assessment");
         return;
       }
 
@@ -546,9 +585,8 @@ export function App() {
     try {
       // Stays for the rest of the day, also after submitting, so the student cannot reach the
       // main site (Practice) from this browser. A teacher signing in here (?teacher) clears it.
-      if (assessment.type !== "task") {
-        localStorage.setItem("edexcel_exam_lock", JSON.stringify({ code: assessment.code, type: "assessment", at: Date.now() }));
-      }
+      const prev = readExamLock();
+      setExamLock(assessment.code, prev && prev.code === assessment.code ? prev.type : assessment.type === "task" ? "task" : "assessment");
     } catch (e) {}
     setDedicatedStudentMode({
       type: assessment.type === "task" ? "task" : "assessment",
@@ -735,9 +773,7 @@ export function App() {
               <TeacherAuthGate
                 onAuthenticated={() => {
                   // A teacher signed in on this computer: it is no longer locked to a student's assessment
-                  try {
-                    localStorage.removeItem("edexcel_exam_lock");
-                  } catch (e) {}
+                  clearExamLock();
                   setIsTeacherAuthenticated(true);
                 }}
                 onCancel={() => setCurrentView("practice")}
