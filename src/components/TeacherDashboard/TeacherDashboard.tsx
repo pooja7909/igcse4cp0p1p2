@@ -11,7 +11,7 @@ import { QRCodeModal } from "../QRCodeModal";
 import { teacherFetch, teacherChangePassword, getStoredTeacherProfile } from "../../utils/teacherAuth";
 import { TeachersPanel } from "./TeachersPanel";
 import { getTaskPaper } from "../../utils/pastPaperUtils";
-import { LearnTeacherPanel } from "../Learn/LearnTeacherPanel";
+const LearnTeacherPanel = React.lazy(() => import("../Learn/LearnTeacherPanel").then((m) => ({ default: m.LearnTeacherPanel })));
 import {
   syncAssessmentToFirestore,
   fetchAllAssessmentsFromFirestore,
@@ -781,7 +781,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       )}
 
       {/* Tab 6: List All Assessments */}
-      {activeTab === "learn" && <LearnTeacherPanel />}
+      {activeTab === "learn" && (
+        <React.Suspense fallback={<div className="p-8 text-center text-slate-500">Loading the Learning Hub...</div>}>
+          <LearnTeacherPanel />
+        </React.Suspense>
+      )}
 
       {activeTab === "list" && (
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden p-6 space-y-4">

@@ -90,6 +90,15 @@ export const RichText: React.FC<{ text: string; className?: string }> = ({ text,
 
 // ---------- Python syntax colouring (light, for lesson code) ----------
 const KW = new Set(["if", "elif", "else", "for", "while", "in", "def", "return", "and", "or", "not", "True", "False", "import", "range", "print", "input", "int", "float", "str", "len", "open", "None", "break"]);
+// Pearson Edexcel pseudocode keywords (upper case), coloured like Python keywords
+const PKW = new Set(["SET", "TO", "IF", "THEN", "ELSE", "END", "WHILE", "DO", "FOR", "FROM", "STEP", "EACH", "REPEAT", "UNTIL", "TIMES", "SEND", "DISPLAY", "RECEIVE", "KEYBOARD", "PROCEDURE", "FUNCTION", "BEGIN", "RETURN", "AND", "OR", "NOT", "MOD", "DIV", "TRUE", "FALSE", "CONST", "INTEGER", "REAL", "STRING", "CHARACTER", "BOOLEAN", "ARRAY", "READ", "WRITE", "LINE", "OPEN", "CLOSE", "FILE"]);
+const PFN = new Set(["LENGTH", "RANDOM"]);
+
+/** True when the code is Pearson pseudocode rather than Python. */
+export function isPseudocode(code: string): boolean {
+  return /^\s*(SET\s|SEND\s|RECEIVE\s|IF\s.*\sTHEN\b|WHILE\s.*\sDO\b|FOR\s.*\sDO\b|REPEAT\b|PROCEDURE\s|FUNCTION\s)/m.test(code || "");
+}
+
 export function colourPython(line: string): React.ReactNode[] {
   const tokens = line.split(/("[^"]*"|'[^']*'|#.*$|\b\d+(?:\.\d+)?\b|\b[A-Za-z_]+\b)/g);
   return tokens.map((t, i) => {
@@ -97,6 +106,8 @@ export function colourPython(line: string): React.ReactNode[] {
     if (/^["']/.test(t)) return <span key={i} className="text-emerald-700">{t}</span>;
     if (t.startsWith("#")) return <span key={i} className="text-slate-400 italic">{t}</span>;
     if (/^\d/.test(t)) return <span key={i} className="text-blue-700">{t}</span>;
+    if (PKW.has(t)) return <span key={i} className="text-orange-700 font-semibold">{t}</span>;
+    if (PFN.has(t)) return <span key={i} className="text-purple-700">{t}</span>;
     if (KW.has(t))
       return (
         <span key={i} className={["print", "input", "int", "float", "str", "len", "range", "open"].includes(t) ? "text-purple-700" : "text-orange-700 font-semibold"}>
@@ -107,13 +118,15 @@ export function colourPython(line: string): React.ReactNode[] {
   });
 }
 
-export const CodeBlock: React.FC<{ code: string; title?: string }> = ({ code, title }) => (
+export const CodeBlock: React.FC<{ code: string; title?: string }> = ({ code, title }) => {
+  const shownTitle = title === "program.py" && isPseudocode(code) ? "algorithm (pseudocode)" : title;
+  return (
   <div className="rounded-xl border border-slate-200 overflow-hidden bg-white">
     <div className="px-3 py-1.5 bg-slate-50 border-b border-slate-200 flex items-center gap-1.5">
       <span className="w-2.5 h-2.5 rounded-full bg-rose-400" />
       <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
       <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
-      {title && <span className="ml-2 text-xs font-mono text-slate-500">{title}</span>}
+      {shownTitle && <span className="ml-2 text-xs font-mono text-slate-500">{shownTitle}</span>}
     </div>
     <pre className="p-3 text-[13px] leading-6 font-mono overflow-x-auto">
       {code.split("\n").map((l, i) => (
@@ -121,7 +134,8 @@ export const CodeBlock: React.FC<{ code: string; title?: string }> = ({ code, ti
       ))}
     </pre>
   </div>
-);
+  );
+};
 
 // ---------- Code tracer: step through a program line by line ----------
 export const CodeTracer: React.FC<{
@@ -164,7 +178,7 @@ export const CodeTracer: React.FC<{
           <span className="w-3 h-3 rounded-full bg-rose-400" />
           <span className="w-3 h-3 rounded-full bg-amber-400" />
           <span className="w-3 h-3 rounded-full bg-emerald-400" />
-          <span className="flex-1 text-center text-sm font-mono text-slate-500">{fileName || "program.py"}</span>
+          <span className="flex-1 text-center text-sm font-mono text-slate-500">{fileName || (isPseudocode(code) ? "algorithm (pseudocode)" : "program.py")}</span>
         </div>
         <div className="py-2 font-mono text-[15px] sm:text-base">
           {lines.map((l, idx) => {

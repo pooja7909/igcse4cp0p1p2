@@ -108,7 +108,8 @@ function awardStamps(s: any, c: any, lessonId: string) {
     give("practised", "🛠️ Practised");
   }
   if (lp.quiz && lp.quiz.max && lp.quiz.best / lp.quiz.max >= 0.6) give("quiz", "⭐ Quiz passed");
-  if (lp.quiz && lp.quiz.max && lp.quiz.best === lp.quiz.max) give("mastery", "🏆 Mastery");
+  // Mastery: practice target reached AND full marks in the quiz
+  if (lp.stamps.practised && lp.quiz && lp.quiz.max && lp.quiz.best === lp.quiz.max) give("mastery", "🏆 Mastery");
   const a = (c.assignments || {})[lessonId];
   if (a && a.due && lp.stamps.learned && lp.stamps.quiz && !lp.stamps.ontime) {
     const doneDay = new Date(Math.max(lp.stamps.learned, lp.stamps.quiz)).toISOString().slice(0, 10);

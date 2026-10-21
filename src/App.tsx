@@ -13,7 +13,8 @@ import { IGCSEUnit, IGCSETask, Assessment, StudentSession, MarkResult } from "./
 import { setLibraryFiles } from "./utils/pythonRunner";
 import { getTeacherToken, verifyTeacherToken, teacherLogout, teacherFetch, TEACHER_SESSION_EXPIRED_EVENT } from "./utils/teacherAuth";
 import { syncCustomQuestionToFirestore, subscribeToCustomQuestions } from "./firebase";
-import { LearnStudentApp } from "./components/Learn/LearnStudentApp";
+// The Learning Hub (and its large lesson data) is only downloaded when it is opened
+const LearnStudentApp = React.lazy(() => import("./components/Learn/LearnStudentApp").then((m) => ({ default: m.LearnStudentApp })));
 import { AlertTriangle } from "lucide-react";
 
 // ---------- Keeping students on the assessment / task they were sent to ----------
@@ -767,7 +768,9 @@ export function App() {
           </div>
         </header>
         <main className="flex-1 w-full px-4 sm:px-6 py-6">
-          <LearnStudentApp code={learnCode} />
+          <React.Suspense fallback={<div className="p-8 text-center text-slate-500">Loading the Learning Hub...</div>}>
+            <LearnStudentApp code={learnCode} />
+          </React.Suspense>
         </main>
       </div>
     );

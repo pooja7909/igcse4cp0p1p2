@@ -1,3 +1,4 @@
+import type { FlowNode } from "./Flowchart";
 // Types shared by the Learning Hub (lessons, classes, progress).
 
 export interface TraceFrame {
@@ -8,7 +9,7 @@ export interface TraceFrame {
 }
 
 export type LearnStep =
-  | { kind: "explain"; title: string; body: string; code?: string; tip?: string }
+  | { kind: "explain"; title: string; body: string; code?: string; tip?: string; flowchart?: FlowNode[] }
   | {
       kind: "trace";
       title: string;
@@ -29,6 +30,7 @@ export type LearnStep =
       hints: string[];
       explain: string;
       code?: string;
+      flowchart?: FlowNode[];
     }
   | { kind: "bits"; title: string; intro: string; mode: "unsigned" | "twos" | "signmag"; bits: number; target: number | null; showHex?: boolean }
   | { kind: "gates"; title: string; intro: string; gate: "AND" | "OR" | "NOT" | "EXPR1" }
@@ -49,8 +51,8 @@ export interface StepperFrame {
 export type PracticeLevel = 1 | 2 | 3; // 1 warm-up, 2 core, 3 exam-style
 
 export type PracticeItem = (
-  | { kind: "mcq"; id: string; title?: string; prompt: string; code?: string; options: string[]; answer: number; explain: string; hints: string[] }
-  | { kind: "output"; id: string; title?: string; prompt: string; code: string; inputs?: string[]; files?: Record<string, string>; expected: string; explain?: string; hints: string[] }
+  | { kind: "mcq"; id: string; title?: string; prompt: string; code?: string; flowchart?: FlowNode[]; options: string[]; answer: number; explain: string; hints: string[] }
+  | { kind: "output"; id: string; title?: string; prompt: string; code: string; flowchart?: FlowNode[]; inputs?: string[]; files?: Record<string, string>; expected: string; explain?: string; hints: string[] }
   | {
       kind: "trace";
       id: string;
@@ -59,6 +61,7 @@ export type PracticeItem = (
       code: string;
       inputs?: string[];
       columns: string[];
+      flowchart?: FlowNode[];
       files?: Record<string, string>;
       rows: (string | null)[][]; // null = cell stays blank
       explain?: string;
@@ -77,6 +80,8 @@ export type PracticeItem = (
       files?: Record<string, string>;
     }
   | { kind: "answer"; id: string; title: string; prompt: string; accept: string[]; hints: string[]; solution: string }
+  | { kind: "classify"; id: string; title?: string; prompt: string; columns: string[]; rowHeader?: string; rows: { text: string; answer: number }[]; explain?: string; hints: string[] }
+  | { kind: "written"; id: string; title?: string; prompt: string; marks: number; points: string[]; guide?: string; model?: string; hints: string[] }
 ) & { level?: PracticeLevel; topic?: string };
 
 export interface QuizQuestion {
@@ -85,6 +90,7 @@ export interface QuizQuestion {
   answer: number;
   explain: string;
   code?: string;
+  flowchart?: FlowNode[];
 }
 
 export interface LearnLesson {
@@ -158,6 +164,6 @@ export const STAMP_INFO: Record<string, { icon: string; label: string; tip: stri
   learned: { icon: "📘", label: "Learned", tip: "Worked through every learning step" },
   practised: { icon: "🛠️", label: "Practised", tip: "Completed all practice tasks" },
   quiz: { icon: "⭐", label: "Quiz passed", tip: "Scored 60% or more in the quiz" },
-  mastery: { icon: "🏆", label: "Mastery", tip: "Full marks in the quiz" },
+  mastery: { icon: "🏆", label: "Mastery", tip: "Practice target reached and full marks in the quiz" },
   ontime: { icon: "⏰", label: "On time", tip: "Learned and passed the quiz before the due date" },
 };

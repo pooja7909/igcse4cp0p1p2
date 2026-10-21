@@ -2,8 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ChevronLeft, ChevronRight, Lightbulb, Lock, CheckCircle2, XCircle, Play, Trophy, BookOpen, Wrench, Star } from "lucide-react";
 import type { LearnLesson, LearnStep, LessonProgress, PracticeItem, QuizQuestion } from "./learnTypes";
 import { STAMP_INFO, practiceTargetCount, quizLength } from "./learnTypes";
-import { McqPractice, OutputPractice, TracePractice, OrderPractice, LEVEL_LABEL } from "./PracticeKinds";
+import { McqPractice, OutputPractice, TracePractice, OrderPractice, LEVEL_LABEL, ClassifyPractice, WrittenPractice } from "./PracticeKinds";
 import { RichText, CodeBlock, CodeTracer, BitsWidget, GatesWidget, StepperWidget, CalcWidget } from "./LearnWidgets";
+import { Flowchart } from "./Flowchart";
 import { PythonCodeEditor } from "../PythonCodeEditor";
 import { runPython, compareOutputs, normalizeOutput } from "../../utils/pythonRunner";
 
@@ -67,7 +68,8 @@ const CheckStep: React.FC<{ step: Extract<LearnStep, { kind: "check" }>; onPasse
       <div className="text-base font-semibold text-slate-900">
         <RichText text={step.question} />
       </div>
-      {step.code && <CodeBlock code={step.code} />}
+      {(step as any).flowchart && <Flowchart nodes={(step as any).flowchart} title="flowchart" />}
+{step.code && <CodeBlock code={step.code} />}
       {step.options ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {step.options.map((o, i) => (
@@ -392,6 +394,8 @@ const KIND_LABEL: Record<string, string> = {
   order: "Put the code in order",
   code: "Write the program",
   answer: "Short answer",
+  classify: "Complete the table",
+  written: "Exam-style written answer",
 };
 
 const PracticeRunner: React.FC<{
@@ -478,6 +482,8 @@ const PracticeRunner: React.FC<{
         {cur.kind === "output" && <OutputPractice item={cur} solved={isSolved(cur.id)} preview={preview} onSolved={(n) => markSolved(cur.id, n)} />}
         {cur.kind === "trace" && <TracePractice item={cur} solved={isSolved(cur.id)} preview={preview} onSolved={(n) => markSolved(cur.id, n)} />}
         {cur.kind === "order" && <OrderPractice item={cur} solved={isSolved(cur.id)} preview={preview} onSolved={(n) => markSolved(cur.id, n)} />}
+        {cur.kind === "classify" && <ClassifyPractice item={cur} solved={isSolved(cur.id)} preview={preview} onSolved={(n) => markSolved(cur.id, n)} />}
+        {cur.kind === "written" && <WrittenPractice item={cur} solved={isSolved(cur.id)} preview={preview} onSolved={(n) => markSolved(cur.id, n)} />}
         {(cur.kind === "code" || cur.kind === "answer") && (
           <PracticeCard item={cur} done={isSolved(cur.id)} preview={preview} onSolved={(n) => markSolved(cur.id, n)} />
         )}
@@ -548,7 +554,8 @@ const QuizPanel: React.FC<{
           <div className="font-semibold text-slate-900 text-sm">
             {qi + 1}. <RichText text={q.q} className="inline" />
           </div>
-          {q.code && <CodeBlock code={q.code} />}
+          {q.flowchart && <Flowchart nodes={q.flowchart} title="flowchart" />}
+{q.code && <CodeBlock code={q.code} />}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {orders[qi].map(({ item, orig }) => {
               const chosen = answers[qi] === orig;
@@ -708,7 +715,8 @@ export const LessonPlayer: React.FC<Props> = ({ lesson, progress, preview, allow
             {step.kind === "explain" && (
               <>
                 <RichText text={step.body} className="text-[15px] text-slate-800" />
-                {step.code && <CodeBlock code={step.code} />}
+                {(step as any).flowchart && <Flowchart nodes={(step as any).flowchart} title="flowchart" />}
+{step.code && <CodeBlock code={step.code} />}
                 {step.tip && <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-sm text-amber-950">💡 {step.tip}</div>}
               </>
             )}
