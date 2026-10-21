@@ -1261,6 +1261,10 @@ async function generateContentWithResilience(
     "gemini-3.8-flash",
     "gemini-flash-latest",
     "gemini-3.1-flash-lite",
+    // Older models as a last resort when the newer ones are overloaded (a model this key cannot use is just skipped)
+    "gemini-flash-lite-latest",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
   ];
   const deadline = Date.now() + (options.maxWaitMs ?? 60_000);
   const pauses = [0, 2_000, 5_000, 10_000, 20_000, 30_000, 30_000];
@@ -2311,7 +2315,9 @@ ${targetType === "code" ? "- Provide 3 or 4 tests with DIFFERENT inputs that lea
         }
         if (!parsed && lastError && !lastProblems.length) {
           res.status(503).json({
-            error: "The AI did not reply in time (it may be busy). Please wait a minute and click Generate again.",
+            error: /503|UNAVAILABLE|high demand|overloaded|429|RESOURCE_EXHAUSTED/i.test(String(lastError?.message || lastError))
+              ? "Google's Gemini AI service is overloaded right now (this is on Google's side, not a problem with your app). The server kept retrying for a few minutes. Please try again in 10-15 minutes."
+              : "The AI did not reply in time. Please wait a minute and click Generate again.",
             detail: String(lastError?.message || lastError).slice(0, 300),
           });
           return;
