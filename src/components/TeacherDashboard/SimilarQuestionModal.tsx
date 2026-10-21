@@ -56,6 +56,19 @@ export const SimilarQuestionModal: React.FC<SimilarQuestionModalProps> = ({
   const [editableStarter, setEditableStarter] = useState("");
   const [editableSolution, setEditableSolution] = useState("");
   const [editableMarks, setEditableMarks] = useState<number>(3);
+  // Quality report from the server, and teacher edits to tests / mark points
+  const [verification, setVerification] = useState<string[]>([]);
+  const [editableTests, setEditableTests] = useState<{ inText: string; out: string; m: number }[]>([]);
+  const [editableMarkPoints, setEditableMarkPoints] = useState<{ criterion: string; marks: number }[]>([]);
+  const [needsRecheck, setNeedsRecheck] = useState(false);
+  const [isChecking, setIsChecking] = useState(false);
+
+  const loadEditables = (t: any) => {
+    setEditableTests((t.tests || []).map((x: any) => ({ inText: (x.in || []).join("\n"), out: String(x.out ?? ""), m: Number(x.m) || 1 })));
+    setEditableMarkPoints(
+      (t.markPoints || []).map((m: any) => ({ criterion: String(m.criterion || m.description || ""), marks: Number(m.marks) || 1 }))
+    );
+  };
 
   // Reset when source task changes or modal opens
   useEffect(() => {
@@ -73,6 +86,10 @@ export const SimilarQuestionModal: React.FC<SimilarQuestionModalProps> = ({
       setEditableStarter("");
       setEditableSolution("");
       setEditableMarks(sourceTask.marks || 3);
+      setVerification([]);
+      setEditableTests([]);
+      setEditableMarkPoints([]);
+      setNeedsRecheck(false);
     }
   }, [isOpen, sourceTask]);
 
@@ -80,7 +97,7 @@ export const SimilarQuestionModal: React.FC<SimilarQuestionModalProps> = ({
 
   const getEffectiveGeneratedTask = (): IGCSETask => {
     if (!generatedTask) throw new Error("No task generated");
-    return {
+    const t: any = {
       ...generatedTask,
       title: editableTitle || generatedTask.title,
       brief: editableBrief || generatedTask.brief,
@@ -88,6 +105,56 @@ export const SimilarQuestionModal: React.FC<SimilarQuestionModalProps> = ({
       solution: editableSolution !== undefined ? editableSolution : generatedTask.solution,
       marks: Number(editableMarks) || generatedTask.marks,
     };
+    if (generatedTask.type === "code" && editableTests.length) {
+      t.tests = editableTests.map((x) => ({
+        in: x.inText === "" ? [] : x.inText.split("\n"),
+        out: x.out,
+        m: Number(x.m) || 1,
+      }));
+    }
+    if (editableMarkPoints.length || (generatedTask as any).markPoints) {
+      t.markPoints = editableMarkPoints
+        .filter((m) => m.criterion.trim())
+        .map((m, i) => ({ id: `MP${i + 1}`, marks: Number(m.marks) || 1, criterion: m.criterion.trim() }));
+    }
+    return t as IGCSETask;
+  };
+
+  // Run the (edited) model answer on the tests: expected outputs are taken from the real run
+  const recheck = async (): Promise<IGCSETask | null> => {
+    const task = getEffectiveGeneratedTask();
+    setIsChecking(true);
+    try {
+      const res = await teacherFetch("/api/generate-similar-question/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not check the question");
+      setVerification(data.notes || []);
+      if (!data.ok) {
+        setError("Please fix these problems first: " + (data.notes || []).join(" "));
+        return null;
+      }
+      const checked = { ...task, ...data.task, verificationNotes: data.notes };
+      setGeneratedTask(checked);
+      loadEditables(checked);
+      setNeedsRecheck(false);
+      setError(null);
+      return checked;
+    } catch (e: any) {
+      setError(e?.message || "Could not check the question");
+      return null;
+    } finally {
+      setIsChecking(false);
+    }
+  };
+
+  // Before saving: make sure a code question's tests still match its model answer
+  const taskReadyToSave = async (): Promise<IGCSETask | null> => {
+    if (generatedTask?.type === "code" && needsRecheck) return await recheck();
+    return getEffectiveGeneratedTask();
   };
 
   const handleGenerateSimilar = async () => {
@@ -124,13 +191,17 @@ export const SimilarQuestionModal: React.FC<SimilarQuestionModalProps> = ({
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || "Failed to generate similar question");
+        const extra = Array.isArray(data.problems) && data.problems.length ? ` (${data.problems[0]})` : "";
+        throw new Error((data.error || "Failed to generate similar question") + extra);
       }
 
       const data = await res.json();
       if (!data.task) throw new Error("Invalid response received from generator");
 
       setGeneratedTask(data.task);
+      setVerification(Array.isArray(data.verification) ? data.verification : data.task.verificationNotes || []);
+      loadEditables(data.task);
+      setNeedsRecheck(false);
       setEditableTitle(data.task.title || "");
       setEditableBrief(data.task.brief || "");
       setEditableStarter(data.task.starter || "");
@@ -148,7 +219,8 @@ export const SimilarQuestionModal: React.FC<SimilarQuestionModalProps> = ({
 
   const handleSaveToBankOnly = async () => {
     try {
-      const task = getEffectiveGeneratedTask();
+      const task = await taskReadyToSave();
+      if (!task) return;
       const res = await teacherFetch("/api/custom-questions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -167,7 +239,8 @@ export const SimilarQuestionModal: React.FC<SimilarQuestionModalProps> = ({
 
   const handleSaveAndAddToAssessment = async () => {
     try {
-      const task = getEffectiveGeneratedTask();
+      const task = await taskReadyToSave();
+      if (!task) return;
       const res = await teacherFetch("/api/custom-questions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -461,6 +534,20 @@ export const SimilarQuestionModal: React.FC<SimilarQuestionModalProps> = ({
                 </div>
               )}
 
+              {verification.length > 0 && (
+                <div className="p-3 rounded-2xl bg-white border border-emerald-200 space-y-1" data-testid="quality-report">
+                  <div className="text-xs font-bold text-emerald-800">Quality checks</div>
+                  {verification.map((v, i) => (
+                    <div key={i} className={`text-[11px] ${v.startsWith("⚠️") || v.startsWith("Attempt") ? "text-amber-800" : "text-slate-700"}`}>
+                      {v}
+                    </div>
+                  ))}
+                  {needsRecheck && (
+                    <div className="text-[11px] font-bold text-amber-800">You changed the model answer or tests - they will be re-checked when you save.</div>
+                  )}
+                </div>
+              )}
+
               <div className="p-4 rounded-2xl bg-indigo-50/50 border border-indigo-200 space-y-3">
                 {/* Metadata Badges */}
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -619,11 +706,134 @@ export const SimilarQuestionModal: React.FC<SimilarQuestionModalProps> = ({
                           <textarea
                             rows={5}
                             value={editableSolution}
-                            onChange={(e) => setEditableSolution(e.target.value)}
+                            onChange={(e) => {
+                              setEditableSolution(e.target.value);
+                              setNeedsRecheck(true);
+                            }}
                             className="w-full px-3 py-2 rounded-lg bg-slate-900 text-emerald-400 font-mono text-xs focus:outline-hidden focus:ring-2 focus:ring-purple-500"
                           />
                         </div>
                       </>
+                    )}
+
+                    {generatedTask.type === "code" && (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-bold text-slate-700">Test cases (one input per line):</label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditableTests((t) => [...t, { inText: "", out: "", m: 1 }]);
+                              setNeedsRecheck(true);
+                            }}
+                            className="text-[11px] font-bold text-indigo-700"
+                          >
+                            + Add test
+                          </button>
+                        </div>
+                        {editableTests.map((t, i) => (
+                          <div key={i} className="grid grid-cols-12 gap-2 items-start p-2 rounded-lg bg-slate-50 border border-slate-200">
+                            <textarea
+                              rows={2}
+                              value={t.inText}
+                              placeholder="inputs, one per line"
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                setEditableTests((arr) => arr.map((x, j) => (j === i ? { ...x, inText: v } : x)));
+                                setNeedsRecheck(true);
+                              }}
+                              className="col-span-5 px-2 py-1 rounded border border-slate-300 font-mono text-[11px]"
+                            />
+                            <pre className="col-span-5 px-2 py-1 rounded bg-white border border-slate-200 font-mono text-[11px] whitespace-pre-wrap min-h-[38px]">
+                              {needsRecheck ? "(re-check to update)" : t.out}
+                            </pre>
+                            <div className="col-span-2 flex items-center gap-1">
+                              <input
+                                type="number"
+                                min={1}
+                                value={t.m}
+                                onChange={(e) => {
+                                  const v = Number(e.target.value) || 1;
+                                  setEditableTests((arr) => arr.map((x, j) => (j === i ? { ...x, m: v } : x)));
+                                }}
+                                className="w-12 px-1 py-1 rounded border border-slate-300 text-[11px]"
+                                title="Marks"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditableTests((arr) => arr.filter((_, j) => j !== i));
+                                  setNeedsRecheck(true);
+                                }}
+                                className="text-rose-600 text-xs font-bold"
+                                title="Remove test"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                        <p className="text-[11px] text-slate-500">Expected outputs are not typed in: they are worked out by running the model answer.</p>
+                      </div>
+                    )}
+
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-bold text-slate-700">
+                          Mark points (total {editableMarkPoints.reduce((a, m) => a + (Number(m.marks) || 0), 0)} of {editableMarks}):
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setEditableMarkPoints((m) => [...m, { criterion: "", marks: 1 }])}
+                          className="text-[11px] font-bold text-indigo-700"
+                        >
+                          + Add mark point
+                        </button>
+                      </div>
+                      {editableMarkPoints.map((m, i) => (
+                        <div key={i} className="flex items-start gap-2">
+                          <span className="text-[11px] font-bold text-slate-500 mt-1.5 w-8">MP{i + 1}</span>
+                          <textarea
+                            rows={1}
+                            value={m.criterion}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setEditableMarkPoints((arr) => arr.map((x, j) => (j === i ? { ...x, criterion: v } : x)));
+                            }}
+                            className="flex-1 px-2 py-1 rounded border border-slate-300 text-[11px]"
+                          />
+                          <input
+                            type="number"
+                            min={1}
+                            value={m.marks}
+                            onChange={(e) => {
+                              const v = Number(e.target.value) || 1;
+                              setEditableMarkPoints((arr) => arr.map((x, j) => (j === i ? { ...x, marks: v } : x)));
+                            }}
+                            className="w-12 px-1 py-1 rounded border border-slate-300 text-[11px]"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setEditableMarkPoints((arr) => arr.filter((_, j) => j !== i))}
+                            className="text-rose-600 text-xs font-bold mt-1"
+                            title="Delete mark point"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
+                    {generatedTask.type === "code" && (
+                      <button
+                        type="button"
+                        data-testid="recheck-question"
+                        onClick={recheck}
+                        disabled={isChecking}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold disabled:opacity-50"
+                      >
+                        {isChecking ? "Checking..." : "Re-check tests with the model answer"}
+                      </button>
                     )}
 
                     <div>

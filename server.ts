@@ -1850,10 +1850,224 @@ function formatBriefAsBullets(brief: any): string {
 }
 
 
+
+// ---------- Quality checks for "Generate Similar" ----------
+// 1. Relevance: the new question must test the same skills as the original.
+// 2. Code questions: the model answer is RUN on every test; expected outputs come from that
+//    run (never from the AI's guess), and a crashing/weak answer is sent back for a retry.
+// 3. A second AI "examiner" reviews the question, answer key and mark scheme.
+
+const NO_PROMPT_PRELUDE = 'import builtins as _b\n_real_input = _b.input\ndef input(prompt=""):\n    return _real_input()\n';
+
+function detectSkills(task: any): string[] {
+  const code = `${task?.solution || ""}\n${task?.starter || ""}`;
+  const text = `${task?.title || ""}\n${task?.brief || ""}`.toLowerCase();
+  const has = (re: RegExp) => re.test(code);
+  const skills: string[] = [];
+  if (has(/\binput\s*\(/)) skills.push("reading user input with input() and converting types");
+  if (has(/\bfor\s+\w+\s+in\s+range/)) skills.push("count-controlled for loop with range()");
+  else if (has(/\bfor\s+\w+\s+in\b/)) skills.push("for loop over a list/string");
+  if (has(/\bwhile\b/)) skills.push(/!=\s*-?\d|sentinel/i.test(code + text) ? "while loop with a sentinel value" : "condition-controlled while loop (e.g. validation)");
+  if (has(/\belif\b/)) skills.push("if / elif / else selection");
+  else if (has(/\bif\b/)) skills.push("if / else selection");
+  if (has(/\band\b|\bor\b/)) skills.push("compound conditions with and/or");
+  if (has(/\[\s*\[/)) skills.push("a two-dimensional list (table) with nested indexing");
+  else if (has(/=\s*\[[^\]]*,/)) skills.push("a one-dimensional list (array)");
+  if (/parallel/i.test(text) || (code.match(/^\s*\w+\s*=\s*\[[^\[]/gm) || []).length >= 2) skills.push("parallel lists that share an index");
+  if (has(/\.append\(/)) skills.push("appending to a list");
+  if (has(/\[\s*-?\d*\s*:\s*-?\d*\s*\]/)) skills.push("string/list slicing");
+  if (has(/\bopen\s*\(/)) skills.push(/["']w["']|["']a["']/.test(code) ? "writing to a text file" : "reading from a text file");
+  if (has(/\.split\(/)) skills.push("splitting lines with split()");
+  if (has(/\bdef\b/)) skills.push(has(/\breturn\b/) ? "a function with parameters and a return value" : "a procedure (subprogram) with parameters");
+  if (has(/%\s*\d/)) skills.push("modulus (%)");
+  if (has(/\/\/\s*\d/)) skills.push("integer division (//)");
+  if (has(/round\(|:\.\d+f|format\(/)) skills.push("formatting numbers (rounding / decimal places)");
+  if (/highest|lowest|maximum|minimum|largest|smallest/.test(text)) skills.push("finding the highest/lowest value with a loop");
+  if (/total|sum|average|mean/.test(text)) skills.push("running total / average");
+  if (/search/.test(text)) skills.push("searching");
+  if (/sort/.test(text)) skills.push("sorting");
+  return Array.from(new Set(skills));
+}
+
+function parseJsonLoose(raw: string): any {
+  const clean = String(raw || "").replace(/```json/gi, "").replace(/```/g, "").trim();
+  try {
+    return JSON.parse(clean);
+  } catch {
+    const a = clean.indexOf("{");
+    const b = clean.lastIndexOf("}");
+    if (a >= 0 && b > a) return JSON.parse(clean.slice(a, b + 1));
+    throw new Error("Not valid JSON");
+  }
+}
+
+function normaliseGenerated(t: any, marks: number): any {
+  const out = { ...t };
+  out.marks = Number(out.marks) || marks;
+  if (Array.isArray(out.tests)) {
+    out.tests = out.tests
+      .filter((x: any) => x && typeof x === "object")
+      .map((x: any) => ({
+        in: (Array.isArray(x.in) ? x.in : x.in === undefined || x.in === null || x.in === "" ? [] : [x.in]).map((v: any) => String(v)),
+        out: String(x.out ?? ""),
+        m: Number(x.m) || 0,
+      }));
+  }
+  if (Array.isArray(out.markPoints)) {
+    out.markPoints = out.markPoints
+      .filter((m: any) => m && (m.criterion || m.description || m.point))
+      .map((m: any, i: number) => ({
+        id: String(m.id || `MP${i + 1}`),
+        marks: Math.max(1, Number(m.marks) || 1),
+        criterion: String(m.criterion || m.description || m.point),
+      }));
+  }
+  return out;
+}
+
+function spreadTestMarks(t: any) {
+  if (!Array.isArray(t.tests) || !t.tests.length) return;
+  const sum = t.tests.reduce((a: number, x: any) => a + (Number(x.m) || 0), 0);
+  if (sum === t.marks) return;
+  const base = Math.max(1, Math.floor(t.marks / t.tests.length));
+  let rem = t.marks;
+  t.tests.forEach((x: any, i: number) => {
+    x.m = i === t.tests.length - 1 ? Math.max(1, rem) : base;
+    rem -= base;
+  });
+}
+
+async function verifyCodeTask(t: any, recheck = false): Promise<{ ok: boolean; problems: string[]; notes: string[]; ran: boolean }> {
+  const problems: string[] = [];
+  const notes: string[] = [];
+  if (!String(t.solution || "").trim()) return { ok: false, problems: ["There is no model solution."], notes, ran: false };
+  if (!Array.isArray(t.tests) || t.tests.length < 2) problems.push("Provide at least 3 test cases (normal, boundary and extreme) with different inputs.");
+  if (problems.length) return { ok: false, problems, notes, ran: false };
+
+  const files = getFilesForTask(t);
+  const results = await runPythonTests(NO_PROMPT_PRELUDE + t.solution, t.tests.map((x: any) => x.in), files);
+  if (!results) {
+    notes.push("⚠️ Python could not be run on the server just now, so the expected outputs are the AI's own - please check them.");
+    return { ok: true, problems, notes, ran: false };
+  }
+  let corrected = 0;
+  results.forEach((r, i) => {
+    const test = t.tests[i];
+    if (r.err) {
+      const line = String(r.err).trim().split("\n").filter(Boolean).pop() || "error";
+      problems.push(`The model solution crashes on test ${i + 1} (inputs ${JSON.stringify(test.in)}): ${line.slice(0, 200)}`);
+      return;
+    }
+    const actual = normalizeOutput(r.out);
+    if (!actual) {
+      problems.push(`The model solution prints nothing for test ${i + 1}.`);
+      return;
+    }
+    if (normalizeOutput(test.out) !== actual) corrected++;
+    test.out = actual;
+  });
+  if (!problems.length) {
+    const distinct = new Set(t.tests.map((x: any) => x.out)).size;
+    const distinctIn = new Set(t.tests.map((x: any) => JSON.stringify(x.in))).size;
+    if (t.tests.length >= 2 && distinctIn > 1 && distinct === 1)
+      problems.push("Every test gives the same output, so the tests cannot tell a right program from a wrong one. Use inputs that lead to different results (normal, boundary, extreme).");
+  }
+  // The starter on its own must not already pass the tests
+  if (!problems.length && String(t.starter || "").trim()) {
+    const sr = await runPythonTests(NO_PROMPT_PRELUDE + t.starter, t.tests.map((x: any) => x.in), files);
+    if (sr && sr.every((r, i) => !r.err && normalizeOutput(r.out) === t.tests[i].out)) problems.push("The starter code already passes all the tests - it must not contain the answer.");
+  }
+  if (!problems.length) {
+    notes.push(`✓ Model answer run on all ${t.tests.length} tests - expected outputs come from running it.`);
+    if (corrected)
+      notes.push(
+        recheck
+          ? `✓ ${corrected} expected output${corrected > 1 ? "s were" : " was"} updated from your model answer.`
+          : `✓ ${corrected} expected output${corrected > 1 ? "s were" : " was"} wrong in the AI draft and ${corrected > 1 ? "have" : "has"} been corrected.`
+      );
+  }
+  return { ok: problems.length === 0, problems, notes, ran: true };
+}
+
+function checkNonCodeTask(t: any): { ok: boolean; problems: string[] } {
+  const problems: string[] = [];
+  if (!String(t.brief || "").trim()) problems.push("The question has no brief.");
+  if (t.type === "mcq") {
+    const qs = Array.isArray(t.questions) ? t.questions : [];
+    if (!qs.length) problems.push("An MCQ needs at least one question with options.");
+    qs.forEach((q: any, i: number) => {
+      const opts = Array.isArray(q.options) ? q.options.map((o: any) => String(o).trim()) : [];
+      if (opts.length < 2) problems.push(`MCQ ${i + 1} needs at least 2 options.`);
+      if (new Set(opts.map((o: string) => o.toLowerCase())).size !== opts.length) problems.push(`MCQ ${i + 1} has duplicate options.`);
+      const a = Number(q.a);
+      if (!(a >= 0 && a < opts.length)) problems.push(`MCQ ${i + 1} answer index is not one of its options.`);
+    });
+  }
+  if (t.type === "table") {
+    const rows = Array.isArray(t.rows) ? t.rows : [];
+    if (!rows.length || !Array.isArray(t.columns) || !t.columns.length) problems.push("The trace table needs columns and rows.");
+  }
+  if (t.type === "inspect" && !(Array.isArray(t.questions) && t.questions.length)) problems.push("The inspection question needs sub-questions with accepted answers.");
+  const msSum = Array.isArray(t.markPoints) ? t.markPoints.reduce((a: number, m: any) => a + (Number(m.marks) || 0), 0) : 0;
+  if (!msSum && !String(t.markScheme || "").trim() && t.type !== "mcq") problems.push("There is no mark scheme.");
+  return { ok: problems.length === 0, problems };
+}
+
+async function reviewGeneratedTask(ai: any, source: any, cand: any, skills: string[]): Promise<{ task: any; notes: string[] }> {
+  const prompt = `You are a second, independent Pearson Edexcel International GCSE Computer Science (4CP0) examiner.
+A colleague wrote a NEW question based on an ORIGINAL one. Check it carefully and FIX anything wrong.
+
+Check:
+1. RELEVANCE - it must test the same skills as the original: ${skills.length ? skills.join("; ") : "the same topic and skills"}. Same question type ("${cand.type}") and ${cand.marks} marks. A different scenario is expected and fine.
+2. ANSWER KEY - every correct answer, MCQ answer index ("a", 0-based), accepted answer and trace-table value must be right.
+3. MARK SCHEME - each mark point must be something a candidate can actually do from the brief; the mark points must add up to exactly ${cand.marks}.
+4. BRIEF - every requirement the solution/mark scheme relies on must be stated in the brief, including the EXACT output wording and formats (spaces, punctuation, decimal places) that the model solution prints. Keep bullet points.
+5. CODE (if any) - the solution must be valid Python 3 that meets the brief; it must only use content in the 4CP0 specification; the starter must not contain the answer; test inputs must cover normal, boundary and extreme/erroneous cases.
+
+Return ONLY the corrected question as a JSON object with exactly the same fields as the input, plus "reviewNotes": an array of short sentences saying what you changed (empty array if nothing needed changing).
+
+ORIGINAL QUESTION:
+${JSON.stringify({ title: source.title, type: source.type, marks: source.marks, brief: source.brief, starter: source.starter, solution: source.solution, markScheme: source.markScheme, markPoints: source.markPoints, questions: source.questions }, null, 1).slice(0, 12000)}
+
+NEW QUESTION TO CHECK:
+${JSON.stringify(cand, null, 1).slice(0, 14000)}`;
+  try {
+    const r = await generateContentWithResilience(ai, {
+      contents: { parts: [{ text: prompt }] },
+      config: { responseMimeType: "application/json" },
+      maxWaitMs: 60_000,
+      perCallTimeoutMs: 55_000,
+    });
+    const reviewed = parseJsonLoose(r.text || "");
+    if (!reviewed || typeof reviewed !== "object" || !reviewed.brief) return { task: cand, notes: [] };
+    const notes = (Array.isArray(reviewed.reviewNotes) ? reviewed.reviewNotes : []).map((n: any) => "Reviewer: " + String(n)).slice(0, 6);
+    delete reviewed.reviewNotes;
+    // Never let the review change what kind of question it is
+    reviewed.type = cand.type;
+    return { task: { ...cand, ...reviewed }, notes: notes.length ? notes : ["✓ Second examiner review: no changes needed."] };
+  } catch (e) {
+    return { task: cand, notes: ["⚠️ The second examiner review could not run this time."] };
+  }
+}
+
+
 // ==========================================
 // AI-POWERED SIMILAR QUESTION GENERATOR (PEARSON EDEXCEL 4CP0 SPECIFICATION)
 // Uses Gemini API to create authentic variations of existing tasks in the question bank
 // ==========================================
+// Re-run a (possibly edited) model solution on its tests and return corrected expected outputs
+app.post("/api/generate-similar-question/verify", requireTeacher, async (req, res) => {
+  const t = normaliseGenerated(req.body?.task || {}, Number(req.body?.task?.marks) || 1);
+  if (t.type !== "code") {
+    const v = checkNonCodeTask(t);
+    res.json({ task: t, ok: v.ok, notes: v.ok ? ["✓ Structure checked."] : v.problems });
+    return;
+  }
+  const v = await verifyCodeTask(t, true);
+  if (v.ok) spreadTestMarks(t);
+  res.json({ task: t, ok: v.ok, notes: v.ok ? v.notes : v.problems });
+});
+
 app.post("/api/generate-similar-question", requireTeacher, async (req, res) => {
   try {
     const {
@@ -2018,16 +2232,74 @@ Reply with ONLY a valid, raw JSON object (no markdown quotes, no text before or 
   "rows": [ ... for table ... ]
 }`;
 
-        const response = await generateContentWithResilience(ai, {
-          contents: { parts: [{ text: prompt }] },
-          config: {
-            responseMimeType: "application/json",
-          },
-        });
+        // ---- Generate, review and verify (one retry with the problems explained) ----
+        const skills = detectSkills(sourceTask);
+        const relevanceBlock = `
 
-        const rawText = response.text?.trim() || "";
-        const cleanJson = rawText.replace(/```json/g, "").replace(/```/g, "").trim();
-        const parsed = JSON.parse(cleanJson);
+==================================================
+RELEVANCE (MOST IMPORTANT):
+The new question MUST test the same skills as the original${skills.length ? ":\n- " + skills.join("\n- ") : "."}
+- Same question type ("${targetType}") and exactly ${targetMarks} marks.
+- Only the scenario, names and values change - not the skills being tested.
+- The brief must state the EXACT output wording your solution prints.
+- Mark points ("markPoints") must add up to exactly ${targetMarks}.
+${targetType === "code" ? "- Provide 3 or 4 tests with DIFFERENT inputs that lead to DIFFERENT outputs (normal, boundary, extreme). Inputs are the exact lines typed by the user, in order." : ""}`;
+        const verificationNotes: string[] = [];
+        let parsed: any = null;
+        let lastProblems: string[] = [];
+        for (let attempt = 1; attempt <= 2 && !parsed; attempt++) {
+          const retryBlock = lastProblems.length
+            ? `\n\nYOUR PREVIOUS ATTEMPT WAS REJECTED FOR THESE REASONS - FIX THEM:\n- ${lastProblems.join("\n- ")}`
+            : "";
+          const response = await generateContentWithResilience(ai, {
+            contents: { parts: [{ text: prompt + relevanceBlock + retryBlock }] },
+            config: { responseMimeType: "application/json" },
+            maxWaitMs: 70_000,
+            perCallTimeoutMs: 65_000,
+          });
+          let cand: any;
+          try {
+            cand = normaliseGenerated(parseJsonLoose(response.text || ""), targetMarks);
+          } catch {
+            lastProblems = ["The reply was not valid JSON."];
+            continue;
+          }
+          if (cand.type !== targetType) {
+            lastProblems = [`The question type must be "${targetType}", not "${cand.type}".`];
+            continue;
+          }
+          const reviewed = await reviewGeneratedTask(ai, sourceTask, cand, skills);
+          cand = normaliseGenerated(reviewed.task, targetMarks);
+          if (cand.type === "code") {
+            const v = await verifyCodeTask(cand);
+            if (!v.ok) {
+              lastProblems = v.problems;
+              verificationNotes.push(`Attempt ${attempt} rejected: ${v.problems[0]}`);
+              continue;
+            }
+            spreadTestMarks(cand);
+            verificationNotes.push(...v.notes, ...reviewed.notes);
+          } else {
+            const v = checkNonCodeTask(cand);
+            if (!v.ok) {
+              lastProblems = v.problems;
+              verificationNotes.push(`Attempt ${attempt} rejected: ${v.problems[0]}`);
+              continue;
+            }
+            verificationNotes.push("✓ Answer key and mark scheme structure checked.", ...reviewed.notes);
+          }
+          const mpSum = Array.isArray(cand.markPoints) ? cand.markPoints.reduce((a: number, m: any) => a + (Number(m.marks) || 0), 0) : 0;
+          if (mpSum && mpSum !== cand.marks) verificationNotes.push(`⚠️ The mark points add up to ${mpSum}, not ${cand.marks} - please check the mark scheme.`);
+          if (skills.length) verificationNotes.push(`Skills kept from the original: ${skills.slice(0, 6).join(", ")}.`);
+          parsed = cand;
+        }
+        if (!parsed) {
+          res.status(422).json({
+            error: "The AI could not write a question that passed the quality checks this time. Please click Generate again.",
+            problems: lastProblems,
+          });
+          return;
+        }
 
         parsed.id = `c_sim_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
         parsed.brief = formatBriefAsBullets(parsed.brief);
@@ -2050,33 +2322,26 @@ Reply with ONLY a valid, raw JSON object (no markdown quotes, no text before or 
 
         if (parsed.type === "code") {
           parsed.starterFileName = parsed.starterFileName || (sourceTask.starterFileName ? `sim_${sourceTask.starterFileName}` : "task_variant.py");
-          // Ensure test marks sum to total marks
-          if (Array.isArray(parsed.tests) && parsed.tests.length > 0) {
-            const sumM = parsed.tests.reduce((acc: number, t: any) => acc + (Number(t.m) || 0), 0);
-            if (sumM !== parsed.marks) {
-              const baseM = Math.max(1, Math.floor(parsed.marks / parsed.tests.length));
-              let rem = parsed.marks;
-              parsed.tests.forEach((t: any, idx: number) => {
-                if (idx === parsed.tests.length - 1) {
-                  t.m = rem;
-                } else {
-                  t.m = baseM;
-                  rem -= baseM;
-                }
-              });
-            }
-          }
         }
+        parsed.verificationNotes = verificationNotes;
 
-        // Persist to custom questions database
-        customQuestionsDb[parsed.id] = parsed;
-        savePersistedQuestions();
-
-        res.json({ success: true, task: parsed, method: "gemini", model: "gemini-3.8-flash" });
+        // Not saved here: the teacher reviews it first and saves it with "Save to Bank"
+        res.json({ success: true, task: parsed, method: "gemini", verification: verificationNotes });
         return;
-      } catch (geminiErr) {
-        console.warn("Gemini generation encountered error, invoking syllabus rule-based generator:", geminiErr);
+      } catch (geminiErr: any) {
+        console.warn("Generate similar failed:", geminiErr);
+        res.status(503).json({
+          error: "The AI is busy or could not be reached. Please wait a moment and click Generate again.",
+          detail: String(geminiErr?.message || geminiErr).slice(0, 300),
+        });
+        return;
       }
+    }
+
+    // No AI key configured: a template question would not be relevant, so say so instead
+    if (!ai) {
+      res.status(503).json({ error: "Generate Similar needs the Gemini API key to be set up on the server." });
+      return;
     }
 
     // Deterministic syllabus-grounded Pearson Edexcel 4CP0 fallback
