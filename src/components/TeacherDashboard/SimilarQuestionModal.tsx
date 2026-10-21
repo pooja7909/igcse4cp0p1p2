@@ -191,7 +191,13 @@ export const SimilarQuestionModal: React.FC<SimilarQuestionModalProps> = ({
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        const extra = Array.isArray(data.problems) && data.problems.length ? ` (${data.problems[0]})` : "";
+        const extra = Array.isArray(data.problems) && data.problems.length
+          ? ` (${data.problems[0]})`
+          : data.detail
+          ? ` [Technical detail: ${String(data.detail).slice(0, 200)}]`
+          : res.status === 504
+          ? " (The request took too long and was stopped by the server.)"
+          : "";
         throw new Error((data.error || "Failed to generate similar question") + extra);
       }
 

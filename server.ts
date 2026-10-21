@@ -2013,7 +2013,8 @@ function checkNonCodeTask(t: any): { ok: boolean; problems: string[] } {
   return { ok: problems.length === 0, problems };
 }
 
-async function reviewGeneratedTask(ai: any, source: any, cand: any, skills: string[]): Promise<{ task: any; notes: string[] }> {
+async function reviewGeneratedTask(ai: any, source: any, cand: any, skills: string[], budgetMs = 60_000): Promise<{ task: any; notes: string[] }> {
+  if (budgetMs < 20_000) return { task: cand, notes: ["⚠️ The second examiner review was skipped to save time - please read the question carefully."] };
   const prompt = `You are a second, independent Pearson Edexcel International GCSE Computer Science (4CP0) examiner.
 A colleague wrote a NEW question based on an ORIGINAL one. Check it carefully and FIX anything wrong.
 
@@ -2034,9 +2035,9 @@ ${JSON.stringify(cand, null, 1).slice(0, 14000)}`;
   try {
     const r = await generateContentWithResilience(ai, {
       contents: { parts: [{ text: prompt }] },
-      config: { responseMimeType: "application/json" },
-      maxWaitMs: 60_000,
-      perCallTimeoutMs: 55_000,
+      config: { responseMimeType: "application/json", thinkingConfig: { thinkingLevel: "LOW" } },
+      maxWaitMs: Math.min(60_000, budgetMs),
+      perCallTimeoutMs: Math.min(55_000, budgetMs),
     });
     const reviewed = parseJsonLoose(r.text || "");
     if (!reviewed || typeof reviewed !== "object" || !reviewed.brief) return { task: cand, notes: [] };
@@ -2247,16 +2248,31 @@ ${targetType === "code" ? "- Provide 3 or 4 tests with DIFFERENT inputs that lea
         const verificationNotes: string[] = [];
         let parsed: any = null;
         let lastProblems: string[] = [];
-        for (let attempt = 1; attempt <= 2 && !parsed; attempt++) {
+        let lastError: any = null;
+        // Vercel stops a request after 300 s, so everything must finish well inside that
+        const started = Date.now();
+        const timeLeft = () => 270_000 - (Date.now() - started);
+        for (let attempt = 1; attempt <= 3 && !parsed; attempt++) {
+          if (attempt > 1 && timeLeft() < 100_000) break;
           const retryBlock = lastProblems.length
             ? `\n\nYOUR PREVIOUS ATTEMPT WAS REJECTED FOR THESE REASONS - FIX THEM:\n- ${lastProblems.join("\n- ")}`
             : "";
-          const response = await generateContentWithResilience(ai, {
-            contents: { parts: [{ text: prompt + relevanceBlock + retryBlock }] },
-            config: { responseMimeType: "application/json" },
-            maxWaitMs: 70_000,
-            perCallTimeoutMs: 65_000,
-          });
+          let response: any;
+          try {
+            response = await generateContentWithResilience(ai, {
+              contents: { parts: [{ text: prompt + relevanceBlock + retryBlock }] },
+              config: { responseMimeType: "application/json", thinkingConfig: { thinkingLevel: "LOW" } },
+              maxWaitMs: Math.max(30_000, Math.min(150_000, timeLeft() - 40_000)),
+              perCallTimeoutMs: 120_000,
+            });
+          } catch (genErr: any) {
+            // A slow or busy model: try again while there is time (unless the key itself is the problem)
+            lastError = genErr;
+            console.warn(`Generate similar attempt ${attempt} failed:`, String(genErr?.message || genErr).slice(0, 300));
+            if (/API key|API_KEY|PERMISSION_DENIED|UNAUTHENTICATED/i.test(String(genErr?.message || ""))) break;
+            continue;
+          }
+          lastError = null;
           let cand: any;
           try {
             cand = normaliseGenerated(parseJsonLoose(response.text || ""), targetMarks);
@@ -2268,7 +2284,7 @@ ${targetType === "code" ? "- Provide 3 or 4 tests with DIFFERENT inputs that lea
             lastProblems = [`The question type must be "${targetType}", not "${cand.type}".`];
             continue;
           }
-          const reviewed = await reviewGeneratedTask(ai, sourceTask, cand, skills);
+          const reviewed = await reviewGeneratedTask(ai, sourceTask, cand, skills, timeLeft() - 45_000);
           cand = normaliseGenerated(reviewed.task, targetMarks);
           if (cand.type === "code") {
             const v = await verifyCodeTask(cand);
@@ -2292,6 +2308,13 @@ ${targetType === "code" ? "- Provide 3 or 4 tests with DIFFERENT inputs that lea
           if (mpSum && mpSum !== cand.marks) verificationNotes.push(`⚠️ The mark points add up to ${mpSum}, not ${cand.marks} - please check the mark scheme.`);
           if (skills.length) verificationNotes.push(`Skills kept from the original: ${skills.slice(0, 6).join(", ")}.`);
           parsed = cand;
+        }
+        if (!parsed && lastError && !lastProblems.length) {
+          res.status(503).json({
+            error: "The AI did not reply in time (it may be busy). Please wait a minute and click Generate again.",
+            detail: String(lastError?.message || lastError).slice(0, 300),
+          });
+          return;
         }
         if (!parsed) {
           res.status(422).json({
