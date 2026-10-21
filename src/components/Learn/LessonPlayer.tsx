@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ChevronLeft, ChevronRight, Lightbulb, Lock, CheckCircle2, XCircle, Play, Trophy, BookOpen, Wrench, Star } from "lucide-react";
 import type { LearnLesson, LearnStep, LessonProgress, PracticeItem, QuizQuestion } from "./learnTypes";
-import { STAMP_INFO } from "./learnTypes";
+import { STAMP_INFO, practiceTargetCount, quizLength } from "./learnTypes";
+import { McqPractice, OutputPractice, TracePractice, OrderPractice, LEVEL_LABEL } from "./PracticeKinds";
 import { RichText, CodeBlock, CodeTracer, BitsWidget, GatesWidget, StepperWidget, CalcWidget } from "./LearnWidgets";
 import { PythonCodeEditor } from "../PythonCodeEditor";
 import { runPython, compareOutputs, normalizeOutput } from "../../utils/pythonRunner";
@@ -216,7 +217,7 @@ async function runAllTests(item: Extract<PracticeItem, { kind: "code" }>, code: 
 }
 
 const PracticeCard: React.FC<{
-  item: PracticeItem;
+  item: Extract<PracticeItem, { kind: "code" }> | Extract<PracticeItem, { kind: "answer" }>;
   done: boolean;
   preview?: boolean;
   onSolved: (attempts: number) => void;
@@ -383,6 +384,130 @@ const PracticeCard: React.FC<{
   );
 };
 
+// ---------------- Practice runner: one question at a time ----------------
+const KIND_LABEL: Record<string, string> = {
+  mcq: "Multiple choice",
+  output: "Predict the output",
+  trace: "Trace table",
+  order: "Put the code in order",
+  code: "Write the program",
+  answer: "Short answer",
+};
+
+const PracticeRunner: React.FC<{
+  items: PracticeItem[];
+  solvedIds: Set<string>;
+  preview?: boolean;
+  onSolved: (id: string, attempts: number) => void;
+  onGoQuiz: () => void;
+}> = ({ items, solvedIds, preview, onSolved, onGoQuiz }) => {
+  const [localSolved, setLocalSolved] = useState<Set<string>>(new Set());
+  const isSolved = (id: string) => solvedIds.has(id) || localSolved.has(id);
+  const [level, setLevel] = useState<number>(0);
+  const visible = items.filter((p) => !level || (p.level || 2) === level);
+  const firstOpen = Math.max(0, visible.findIndex((p) => !isSolved(p.id)));
+  const [pos, setPos] = useState(firstOpen);
+  const cur = visible[Math.min(pos, visible.length - 1)];
+  const solvedCount = items.filter((p) => isSolved(p.id)).length;
+  const target = practiceTargetCount(items.length);
+  const go = (i: number) => {
+    setPos(Math.max(0, Math.min(visible.length - 1, i)));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const nextOpen = () => {
+    for (let k = 1; k <= visible.length; k++) {
+      const i = (pos + k) % visible.length;
+      if (!isSolved(visible[i].id)) return go(i);
+    }
+  };
+  const markSolved = (id: string, attempts: number) => {
+    setLocalSolved((s) => new Set(s).add(id));
+    onSolved(id, attempts);
+  };
+  const levels = Array.from(new Set(items.map((p) => p.level || 2))).sort();
+  if (!cur) return <div className="text-sm text-slate-500">No practice questions for this lesson.</div>;
+  return (
+    <div className="space-y-3">
+      <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-emerald-950">
+          <span>
+            <strong>{solvedCount}</strong> of {items.length} solved - get <strong>{target}</strong> right to earn the 🛠️ stamp.
+          </span>
+          <span className="flex gap-1 text-xs">
+            <button type="button" onClick={() => { setLevel(0); setPos(0); }} className={`px-2 py-1 rounded-lg font-bold ${!level ? "bg-emerald-700 text-white" : "bg-white text-emerald-800 border border-emerald-300"}`}>
+              All
+            </button>
+            {levels.map((l) => (
+              <button key={l} type="button" onClick={() => { setLevel(l); setPos(0); }} className={`px-2 py-1 rounded-lg font-bold ${level === l ? "bg-emerald-700 text-white" : "bg-white text-emerald-800 border border-emerald-300"}`}>
+                {LEVEL_LABEL[l]?.label}
+              </button>
+            ))}
+          </span>
+        </div>
+        <div className="h-2 rounded-full bg-white overflow-hidden">
+          <div className="h-full bg-emerald-500 transition-all" style={{ width: `${(solvedCount / Math.max(1, items.length)) * 100}%` }} />
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {visible.map((p, i) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => go(i)}
+              title={`${i + 1}. ${KIND_LABEL[p.kind]}`}
+              className={`w-7 h-7 rounded-lg text-[11px] font-bold border ${
+                i === pos ? "bg-purple-600 text-white border-purple-700" : isSolved(p.id) ? "bg-emerald-500 text-white border-emerald-600" : "bg-white text-slate-600 border-slate-300 hover:border-slate-400"
+              }`}
+            >
+              {i + 1}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div key={cur.id} className="p-4 rounded-2xl border-2 border-slate-200 bg-white space-y-3">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="font-bold text-slate-500">
+            Question {pos + 1} of {visible.length}
+          </span>
+          <span className={`px-2 py-0.5 rounded-full font-bold ${LEVEL_LABEL[cur.level || 2]?.cls}`}>{LEVEL_LABEL[cur.level || 2]?.label}</span>
+          <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 font-bold">{KIND_LABEL[cur.kind]}</span>
+          {cur.title && <span className="text-slate-600 font-semibold">{cur.title}</span>}
+          {isSolved(cur.id) && <span className="ml-auto text-emerald-700 font-bold inline-flex items-center gap-1"><CheckCircle2 className="w-4 h-4" /> Solved</span>}
+        </div>
+        {cur.kind === "mcq" && <McqPractice item={cur} solved={isSolved(cur.id)} preview={preview} onSolved={(n) => markSolved(cur.id, n)} />}
+        {cur.kind === "output" && <OutputPractice item={cur} solved={isSolved(cur.id)} preview={preview} onSolved={(n) => markSolved(cur.id, n)} />}
+        {cur.kind === "trace" && <TracePractice item={cur} solved={isSolved(cur.id)} preview={preview} onSolved={(n) => markSolved(cur.id, n)} />}
+        {cur.kind === "order" && <OrderPractice item={cur} solved={isSolved(cur.id)} preview={preview} onSolved={(n) => markSolved(cur.id, n)} />}
+        {(cur.kind === "code" || cur.kind === "answer") && (
+          <PracticeCard item={cur} done={isSolved(cur.id)} preview={preview} onSolved={(n) => markSolved(cur.id, n)} />
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <button type="button" disabled={pos === 0} onClick={() => go(pos - 1)} className="px-4 py-2 rounded-xl border border-slate-300 bg-white text-sm font-bold text-slate-700 inline-flex items-center gap-1 disabled:opacity-40">
+          <ChevronLeft className="w-4 h-4" /> Previous
+        </button>
+        <div className="flex gap-2">
+          {solvedCount < items.length && (
+            <button type="button" onClick={nextOpen} className="px-3 py-2 rounded-xl border border-emerald-300 bg-emerald-50 text-sm font-bold text-emerald-800">
+              Next unsolved
+            </button>
+          )}
+          {pos < visible.length - 1 ? (
+            <button type="button" data-testid="practice-next" onClick={() => go(pos + 1)} className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-sm font-bold inline-flex items-center gap-1">
+              Next <ChevronRight className="w-4 h-4" />
+            </button>
+          ) : (
+            <button type="button" onClick={onGoQuiz} className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-sm font-bold inline-flex items-center gap-1">
+              Go to the quiz <ChevronRight className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ---------------- Quiz ----------------
 const QuizPanel: React.FC<{
   questions: QuizQuestion[];
@@ -390,10 +515,17 @@ const QuizPanel: React.FC<{
   attempts: number;
   allowRetake: boolean;
   preview?: boolean;
+  draw?: number;
   onFinish: (score: number) => void;
-}> = ({ questions, best, attempts, allowRetake, preview, onFinish }) => {
+}> = ({ questions, best, attempts, allowRetake, preview, onFinish, draw }) => {
   const [seed, setSeed] = useState(() => Date.now() % 100000);
-  const [answers, setAnswers] = useState<(number | null)[]>(questions.map(() => null));
+  const pool = questions;
+  // A fresh random selection of questions for each attempt
+  questions = useMemo(() => {
+    const n = quizLength({ quiz: pool, quizDraw: draw });
+    return shuffled(pool, seed * 3 + 1).slice(0, n).map((x) => x.item);
+  }, [pool, seed, draw]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [answers, setAnswers] = useState<(number | null)[]>(() => Array(quizLength({ quiz: pool, quizDraw: draw })).fill(null));
   const [submitted, setSubmitted] = useState(false);
   const orders = useMemo(() => questions.map((q, i) => shuffled(q.options, seed + i * 7)), [questions, seed]);
   const score = answers.reduce((s: number, a, i) => s + (a === questions[i].answer ? 1 : 0), 0);
@@ -563,7 +695,7 @@ export const LessonPlayer: React.FC<Props> = ({ lesson, progress, preview, allow
       <div className="flex gap-1 p-1 rounded-2xl bg-slate-100">
         {tabBtn("learn", "Learn", <BookOpen className="w-4 h-4" />, false, `${Math.min(idx + 1, total)}/${total}`)}
         {tabBtn("practice", "Practice", <Wrench className="w-4 h-4" />, !learned, `${practiceCount}/${lesson.practice.length}`)}
-        {tabBtn("quiz", "Quiz", <Star className="w-4 h-4" />, !learned, quiz ? `best ${quiz.best}/${quiz.max}` : "")}
+        {tabBtn("quiz", "Quiz", <Star className="w-4 h-4" />, !learned, quiz ? `best ${quiz.best}/${quiz.max}` : `${quizLength(lesson)} questions`)}
       </div>
 
       {tab === "learn" && (
@@ -636,31 +768,25 @@ export const LessonPlayer: React.FC<Props> = ({ lesson, progress, preview, allow
 
       {tab === "practice" && (
         <div className="space-y-4">
-          <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-sm text-emerald-950">
-            Practise what you have learned. Use the hints if you are stuck - a model answer appears after 3 tries. Solve them all to earn the 🛠️ stamp.
-          </div>
-          {lesson.practice.map((p) => (
-            <PracticeCard
-              key={p.id}
-              item={p}
-              done={practiceDone(p.id)}
-              preview={preview}
-              onSolved={(attempts) => {
-                if (!preview && onEvent) onEvent({ kind: "practice", practiceId: p.id, attempts });
-              }}
-            />
-          ))}
-          <div className="flex justify-end">
-            <button type="button" onClick={() => { setTab("quiz"); window.scrollTo({ top: 0, behavior: "smooth" }); }} className="px-5 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-sm font-bold inline-flex items-center gap-1">
-              Go to the quiz <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
+          <PracticeRunner
+            items={lesson.practice}
+            solvedIds={new Set(Object.keys(progress?.practice || {}))}
+            preview={preview}
+            onSolved={(id, attempts) => {
+              if (!preview && onEvent) onEvent({ kind: "practice", practiceId: id, attempts });
+            }}
+            onGoQuiz={() => {
+              setTab("quiz");
+              window.scrollTo({ top: 0, behavior: "smooth" });
+            }}
+          />
         </div>
       )}
 
       {tab === "quiz" && (
         <QuizPanel
           questions={lesson.quiz}
+          draw={lesson.quizDraw}
           best={quiz?.best}
           attempts={quiz?.attempts || 0}
           allowRetake={allowQuizRetakes}

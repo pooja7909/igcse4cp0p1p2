@@ -46,7 +46,25 @@ export interface StepperFrame {
   table?: [string, string][];
 }
 
-export type PracticeItem =
+export type PracticeLevel = 1 | 2 | 3; // 1 warm-up, 2 core, 3 exam-style
+
+export type PracticeItem = (
+  | { kind: "mcq"; id: string; title?: string; prompt: string; code?: string; options: string[]; answer: number; explain: string; hints: string[] }
+  | { kind: "output"; id: string; title?: string; prompt: string; code: string; inputs?: string[]; files?: Record<string, string>; expected: string; explain?: string; hints: string[] }
+  | {
+      kind: "trace";
+      id: string;
+      title?: string;
+      prompt: string;
+      code: string;
+      inputs?: string[];
+      columns: string[];
+      files?: Record<string, string>;
+      rows: (string | null)[][]; // null = cell stays blank
+      explain?: string;
+      hints: string[];
+    }
+  | { kind: "order"; id: string; title?: string; prompt: string; lines: string[]; accept?: number[][]; explain?: string; hints: string[] }
   | {
       kind: "code";
       id: string;
@@ -58,7 +76,8 @@ export type PracticeItem =
       hints: string[];
       files?: Record<string, string>;
     }
-  | { kind: "answer"; id: string; title: string; prompt: string; accept: string[]; hints: string[]; solution: string };
+  | { kind: "answer"; id: string; title: string; prompt: string; accept: string[]; hints: string[]; solution: string }
+) & { level?: PracticeLevel; topic?: string };
 
 export interface QuizQuestion {
   q: string;
@@ -78,7 +97,14 @@ export interface LearnLesson {
   steps: LearnStep[];
   practice: PracticeItem[];
   quiz: QuizQuestion[];
+  /** How many quiz questions are drawn (at random) for each attempt */
+  quizDraw?: number;
 }
+
+/** Practice target for the 🛠️ stamp: this share of the practice questions answered correctly */
+export const PRACTICE_TARGET = 0.8;
+export const practiceTargetCount = (total: number) => (total <= 3 ? total : Math.ceil(total * PRACTICE_TARGET));
+export const quizLength = (l: { quiz: unknown[]; quizDraw?: number }) => Math.min(l.quizDraw || 10, l.quiz.length);
 
 // ---- Classes and progress (stored on the server) ----
 export interface LearnAssignment {

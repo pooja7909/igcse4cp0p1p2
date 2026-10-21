@@ -17,40 +17,75 @@ function inline(text: string, keyBase: string) {
   });
 }
 
-export const RichText: React.FC<{ text: string; className?: string }> = ({ text, className }) => {
-  const blocks = String(text || "").trim().split(/\n\s*\n/);
-  return (
-    <div className={`space-y-3 leading-relaxed ${className || ""}`}>
-      {blocks.map((b, bi) => {
-        const lines = b.split("\n");
-        if (lines.every((l) => /^\s*- /.test(l))) {
-          return (
-            <ul key={bi} className="list-disc pl-5 space-y-1">
-              {lines.map((l, li) => (
-                <li key={li}>{inline(l.replace(/^\s*- /, ""), `${bi}-${li}-`)}</li>
-              ))}
-            </ul>
-          );
-        }
-        const head = lines.filter((l) => !/^\s*- /.test(l));
-        const bullets = lines.filter((l) => /^\s*- /.test(l));
-        return (
-          <div key={bi}>
-            {head.map((l, li) => (
-              <p key={li}>{inline(l, `${bi}-h${li}-`)}</p>
+function TextBlock({ b, bi }: { b: string; bi: number }) {
+  const lines = b.split("\n");
+  // simple markdown table: | a | b |
+  if (lines.length >= 2 && lines.every((l) => /^\s*\|.*\|\s*$/.test(l))) {
+    const rows = lines.filter((l) => !/^\s*\|[\s:|-]+\|\s*$/.test(l)).map((l) => l.trim().slice(1, -1).split("|").map((c) => c.trim()));
+    const [head, ...body] = rows;
+    return (
+      <div className="overflow-x-auto">
+        <table className="text-sm border-collapse">
+          <thead>
+            <tr>{head.map((c, i) => <th key={i} className="border border-slate-300 bg-slate-100 px-2 py-1 text-left">{inline(c, `${bi}-th${i}-`)}</th>)}</tr>
+          </thead>
+          <tbody>
+            {body.map((r, ri) => (
+              <tr key={ri}>{r.map((c, i) => <td key={i} className="border border-slate-300 px-2 py-1 align-top">{inline(c, `${bi}-${ri}-${i}-`)}</td>)}</tr>
             ))}
-            {bullets.length > 0 && (
-              <ul className="list-disc pl-5 space-y-1 mt-1">
-                {bullets.map((l, li) => (
-                  <li key={li}>{inline(l.replace(/^\s*- /, ""), `${bi}-b${li}-`)}</li>
-                ))}
-              </ul>
-            )}
-          </div>
-        );
-      })}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+  const isBullet = (l: string) => /^\s*- /.test(l);
+  const isNum = (l: string) => /^\s*\d+\. /.test(l);
+  const head = lines.filter((l) => !isBullet(l) && !isNum(l));
+  const bullets = lines.filter(isBullet);
+  const nums = lines.filter(isNum);
+  return (
+    <div>
+      {head.map((l, li) => (
+        <p key={li}>{inline(l, `${bi}-h${li}-`)}</p>
+      ))}
+      {bullets.length > 0 && (
+        <ul className={`list-disc pl-5 space-y-1 ${head.length ? "mt-1" : ""}`}>
+          {bullets.map((l, li) => (
+            <li key={li}>{inline(l.replace(/^\s*- /, ""), `${bi}-b${li}-`)}</li>
+          ))}
+        </ul>
+      )}
+      {nums.length > 0 && (
+        <ol className={`list-decimal pl-5 space-y-1 ${head.length || bullets.length ? "mt-1" : ""}`}>
+          {nums.map((l, li) => (
+            <li key={li}>{inline(l.replace(/^\s*\d+\. /, ""), `${bi}-n${li}-`)}</li>
+          ))}
+        </ol>
+      )}
     </div>
   );
+}
+
+export const RichText: React.FC<{ text: string; className?: string }> = ({ text, className }) => {
+  // fenced ``` code blocks first (they may contain blank lines), then paragraphs
+  const pieces = String(text || "").trim().split(/^```[a-z]*\s*$/m);
+  const out: React.ReactNode[] = [];
+  pieces.forEach((piece, pi) => {
+    if (pi % 2 === 1) {
+      out.push(
+        <pre key={`c${pi}`} className="bg-slate-900 text-slate-100 rounded-lg p-3 text-sm font-mono overflow-x-auto whitespace-pre">
+          {piece.replace(/^\n+|\n+$/g, "")}
+        </pre>
+      );
+      return;
+    }
+    piece
+      .trim()
+      .split(/\n\s*\n/)
+      .filter((b) => b.trim())
+      .forEach((b, bi) => out.push(<TextBlock key={`${pi}-${bi}`} b={b} bi={pi * 1000 + bi} />));
+  });
+  return <div className={`space-y-3 leading-relaxed ${className || ""}`}>{out}</div>;
 };
 
 // ---------- Python syntax colouring (light, for lesson code) ----------

@@ -70,7 +70,14 @@ function publicClass(c: any) {
 function lessonTotals(lessonId: string) {
   const L: any = (LEARN_LESSON_MAP as any)[lessonId];
   if (!L) return null;
-  return { steps: L.steps.length, practiceIds: L.practice.map((p: any) => p.id), quizMax: L.quiz.length };
+  const n = L.practice.length;
+  return {
+    steps: L.steps.length,
+    practiceIds: L.practice.map((p: any) => p.id),
+    // 🛠️ stamp: 80% of the practice questions right (all of them if there are only a few)
+    practiceTarget: n <= 3 ? n : Math.ceil(n * 0.8),
+    quizMax: Math.min(L.quizDraw || 10, L.quiz.length),
+  };
 }
 
 function blankLesson(totalSteps: number) {
@@ -95,7 +102,8 @@ function awardStamps(s: any, c: any, lessonId: string) {
     }
   };
   if (lp.learnedAt) give("learned", "📘 Learned");
-  if (tot.practiceIds.length && tot.practiceIds.every((id: string) => lp.practice[id])) {
+  const solved = tot.practiceIds.filter((id: string) => lp.practice[id]).length;
+  if (tot.practiceIds.length && solved >= tot.practiceTarget) {
     if (!lp.practicedAt) lp.practicedAt = now;
     give("practised", "🛠️ Practised");
   }
