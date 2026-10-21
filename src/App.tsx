@@ -40,6 +40,27 @@ function clearExamLock() {
   } catch (e) {}
 }
 
+// Opening a Learning Hub link (?learn=CODE) keeps this browser on that class's Learning Hub,
+// so deleting the end of the link does not open the main site. A teacher signing in clears it.
+const LEARN_LOCK_DAYS = 120;
+function readLearnLock(): string {
+  try {
+    const lock = JSON.parse(localStorage.getItem("edexcel_learn_lock") || "null");
+    if (lock && lock.code && Date.now() - (lock.at || 0) < LEARN_LOCK_DAYS * 86400000) return String(lock.code);
+  } catch (e) {}
+  return "";
+}
+function setLearnLock(code: string) {
+  try {
+    if (code) localStorage.setItem("edexcel_learn_lock", JSON.stringify({ code, at: Date.now() }));
+  } catch (e) {}
+}
+function clearLearnLock() {
+  try {
+    localStorage.removeItem("edexcel_learn_lock");
+  } catch (e) {}
+}
+
 export function App() {
   const [units, setUnits] = useState<IGCSEUnit[]>(() => {
     // 1. Always load the full authoritative 1,000+ curriculum bank (including U11 Text File Handling)
@@ -113,7 +134,24 @@ export function App() {
   // Learning Hub student link: ?learn=CODE
   const [learnCode] = useState<string>(() => {
     try {
-      return (new URLSearchParams(window.location.search).get("learn") || "").trim().toUpperCase();
+      const params = new URLSearchParams(window.location.search);
+      const fromLink = (params.get("learn") || "").trim().toUpperCase();
+      if (fromLink) {
+        setLearnLock(fromLink);
+        return fromLink;
+      }
+      // A teacher's link or an assessment/task link always wins over the Learning Hub
+      const hash = window.location.hash || "";
+      if (params.has("teacher") || params.has("task") || params.has("assessment") || /^#(teacher|staff|task=|assessment=)/.test(hash)) return "";
+      if (readExamLock()) return "";
+      const locked = readLearnLock();
+      if (locked) {
+        try {
+          window.history.replaceState({}, document.title, window.location.pathname + `?learn=${encodeURIComponent(locked)}`);
+        } catch (e) {}
+        return locked;
+      }
+      return "";
     } catch {
       return "";
     }
@@ -382,7 +420,12 @@ export function App() {
       } catch (e) {}
     }
     const lock = readExamLock();
-    if (!lock) return;
+    if (!lock) {
+      // A browser that has opened a Learning Hub link goes back to the Learning Hub
+      const learnLocked = readLearnLock();
+      if (learnLocked && !learnCode) window.location.replace(window.location.pathname + `?learn=${encodeURIComponent(learnLocked)}`);
+      return;
+    }
     setInitialJoinCode(lock.code);
     setDedicatedStudentMode({ type: lock.type });
     setCurrentView("exam_join");
@@ -870,6 +913,7 @@ export function App() {
                 onAuthenticated={() => {
                   // A teacher signed in on this computer: it is no longer locked to a student's assessment
                   clearExamLock();
+                  clearLearnLock();
                   setIsTeacherAuthenticated(true);
                 }}
                 onCancel={() => setCurrentView("practice")}
