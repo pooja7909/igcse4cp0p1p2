@@ -3926,6 +3926,28 @@ async function loginWithPreviousDatabase(email: any, password: any, passcode: an
   }
 }
 
+// Slow down password guessing: after a few wrong teacher passwords from one address, every
+// further attempt waits longer (up to 15 s). A correct sign-in resets it.
+const loginFailures = new Map<string, { n: number; at: number }>();
+function loginClientKey(req: express.Request) {
+  return String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "?").split(",")[0].trim();
+}
+app.use("/api/teacher/login", async (req, res, next) => {
+  if (req.method !== "POST") return next();
+  const key = loginClientKey(req);
+  const rec = loginFailures.get(key);
+  if (rec && Date.now() - rec.at > 30 * 60 * 1000) loginFailures.delete(key);
+  const fails = loginFailures.get(key)?.n || 0;
+  if (fails >= 3) await new Promise((r) => setTimeout(r, Math.min(15, (fails - 2) * 3) * 1000));
+  res.on("finish", () => {
+    if (res.statusCode === 401) {
+      const r = loginFailures.get(key) || { n: 0, at: Date.now() };
+      loginFailures.set(key, { n: r.n + 1, at: Date.now() });
+    } else if (res.statusCode < 300) loginFailures.delete(key);
+  });
+  next();
+});
+
 app.post("/api/teacher/login", async (req, res) => {
   const { email, password, passcode } = req.body || {};
 

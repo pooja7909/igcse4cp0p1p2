@@ -77,6 +77,118 @@ function markTeacherDevice() {
   } catch (e) {}
 }
 
+// ---------- Every student link keeps the browser on it ----------
+// Whatever link a teacher shares (?task=, ?assessment=, ?learn=, ?practice), opening it remembers it.
+// If the student then deletes or edits any part of the address, they are sent straight back to the
+// LAST link they opened. Assessment/task links last for the day; Learning Hub and practice links longer.
+// A teacher's computer (a teacher has signed in on it) is never locked.
+const STUDENT_LINK_KEY = "edexcel_student_link";
+function rememberStudentLink() {
+  try {
+    if (isTeacherDevice()) return;
+    const p = new URLSearchParams(window.location.search);
+    let link = "";
+    let days = 1;
+    if (p.get("task")) link = `?task=${encodeURIComponent(p.get("task")!.trim().toUpperCase())}`;
+    else if (p.get("assessment")) link = `?assessment=${encodeURIComponent(p.get("assessment")!.trim().toUpperCase())}`;
+    else if (p.get("learn")) {
+      link = `?learn=${encodeURIComponent(p.get("learn")!.trim().toUpperCase())}`;
+      days = 120;
+    } else if (p.has("practice")) {
+      link = "?practice";
+      days = 120;
+    }
+    if (link) localStorage.setItem(STUDENT_LINK_KEY, JSON.stringify({ link, at: Date.now(), days }));
+  } catch (e) {}
+}
+function rememberedStudentLink(): string {
+  try {
+    if (isTeacherDevice()) return "";
+    const v = JSON.parse(localStorage.getItem(STUDENT_LINK_KEY) || "null");
+    if (!v || !v.link) return "";
+    const fresh = v.days === 1 ? new Date(v.at).toDateString() === new Date().toDateString() : Date.now() - v.at < v.days * 86400000;
+    return fresh ? v.link : "";
+  } catch (e) {
+    return "";
+  }
+}
+// Runs once, before the page is drawn
+(function keepStudentOnTheirLink() {
+  try {
+    const p = new URLSearchParams(window.location.search);
+    const hash = window.location.hash || "";
+    const studentLink = p.get("task") || p.get("assessment") || p.get("learn") || p.has("practice") || /^#(practice|task=|assessment=)/.test(hash);
+    if (studentLink) {
+      rememberStudentLink();
+      return;
+    }
+    // Everything else - the main address, an edited link, even the staff address - goes back to the
+    // student's link. (A teacher who needs to sign in on a student's computer can use a private window.)
+    const link = rememberedStudentLink();
+    if (link) window.location.replace(window.location.pathname + link);
+  } catch (e) {}
+})();
+
+// What a student sees on the main address: no menu, no sign-in - just "type the code from your teacher's link"
+function StudentCodeLanding() {
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const go = async () => {
+    const c = code.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (!c) return;
+    setBusy(true);
+    setError("");
+    try {
+      const learn = await fetch(`/api/learn/c/${encodeURIComponent(c)}`);
+      if (learn.ok) {
+        window.location.href = `/?learn=${encodeURIComponent(c)}`;
+        return;
+      }
+      const a = await fetch(`/api/assessments/${encodeURIComponent(c)}`);
+      if (a.ok) {
+        const data = await a.json().catch(() => ({}));
+        const kind = data?.assessment?.type === "task" ? "task" : "assessment";
+        window.location.href = `/?${kind}=${encodeURIComponent(c)}`;
+        return;
+      }
+      setError("That code was not found. Check the link or code your teacher gave you.");
+    } catch {
+      setError("Could not check the code - please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="min-h-screen bg-slate-100/70 text-slate-900 flex flex-col font-sans">
+      <header className="bg-white border-b border-slate-200">
+        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-2">
+          <span className="w-8 h-8 rounded-lg bg-purple-600 text-white flex items-center justify-center font-bold">CS</span>
+          <span className="font-bold text-slate-900">Computer Science</span>
+        </div>
+      </header>
+      <main className="flex-1 w-full px-4 py-10 flex justify-center">
+        <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4 h-fit">
+          <h1 className="text-xl font-extrabold">Open your work</h1>
+          <p className="text-sm text-slate-600">Use the link your teacher sent you. If you do not have it, type the code from the link (the letters and numbers after the = sign).</p>
+          <input
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && go()}
+            placeholder="e.g. NX2XDL"
+            data-testid="student-code"
+            className="w-full px-3 py-2.5 rounded-xl border border-slate-300 font-mono text-lg tracking-widest uppercase"
+          />
+          {error && <div className="text-sm text-rose-700">{error}</div>}
+          <button type="button" disabled={busy || !code.trim()} onClick={go} data-testid="student-code-go" className="w-full py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold disabled:opacity-50">
+            {busy ? "Checking..." : "Open"}
+          </button>
+        </div>
+      </main>
+    </div>
+  );
+}
+
 export function App() {
   const [units, setUnits] = useState<IGCSEUnit[]>(() => {
     // 1. Always load the full authoritative 1,000+ curriculum bank (including U11 Text File Handling)
@@ -146,6 +258,15 @@ export function App() {
     return "teacher";
   });
   const [isSpecModalOpen, setIsSpecModalOpen] = useState(false);
+  // The staff sign-in address: ?teacher (or #teacher / #staff)
+  const [staffEntry] = useState<boolean>(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.has("teacher") || params.get("view") === "teacher" || window.location.hash === "#teacher" || window.location.hash === "#staff";
+    } catch {
+      return false;
+    }
+  });
   // Learning Hub student link: ?learn=CODE
   const [learnCode] = useState<string>(() => {
     try {
@@ -846,7 +967,12 @@ export function App() {
     );
   }
 
-  // Anyone who is not a signed-in teacher and is not on a student link only sees the sign-in box
+  // Anyone who is not a signed-in teacher and not on a student link:
+  // - on a teacher's computer, or with the staff address (?teacher): the sign-in box
+  // - everyone else (e.g. a student who deleted their link): only a box to type their code again
+  if (!isTeacherAuthenticated && currentView === "teacher" && !staffEntry && !isTeacherDevice()) {
+    return <StudentCodeLanding />;
+  }
   if (!isTeacherAuthenticated && currentView === "teacher") {
     return (
       <div className="min-h-screen bg-slate-100/70 text-slate-900 flex flex-col font-sans">
