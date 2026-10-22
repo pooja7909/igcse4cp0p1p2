@@ -23,6 +23,8 @@ import { AlertTriangle } from "lucide-react";
 // by deleting the end of the link. A teacher signing in on this computer clears it.
 type ExamLockInfo = { code: string; type: "task" | "assessment"; at: number };
 function readExamLock(): ExamLockInfo | null {
+  // A teacher's computer is never locked (a teacher may open a student link to check it)
+  if (isTeacherDevice()) return null;
   try {
     const lock = JSON.parse(localStorage.getItem("edexcel_exam_lock") || "null");
     if (lock && lock.code && new Date(lock.at || 0).toDateString() === new Date().toDateString()) return lock;
@@ -131,8 +133,7 @@ export function App() {
           return "exam_join";
         }
         // A formal assessment this browser started and has not submitted yet: go straight back to it
-        const lock = JSON.parse(localStorage.getItem("edexcel_exam_lock") || "null");
-        if (lock && lock.code && new Date(lock.at || 0).toDateString() === new Date().toDateString()) {
+        if (readExamLock()) {
           return "exam_join";
         }
         // Free Practice area: ?practice
@@ -488,8 +489,8 @@ export function App() {
       // (e.g. the student deleted the end of the link): send them back to it.
       if (!urlParams.has("teacher")) {
         try {
-          const lock = JSON.parse(localStorage.getItem("edexcel_exam_lock") || "null");
-          if (lock && lock.code && new Date(lock.at || 0).toDateString() === new Date().toDateString()) {
+          const lock = readExamLock();
+          if (lock) {
             setInitialJoinCode(String(lock.code));
             setDedicatedStudentMode({ type: lock.type === "task" ? "task" : "assessment" });
             setCurrentView("exam_join");
