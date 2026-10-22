@@ -256,7 +256,7 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
         )}
       </div>
 
-      <div className="grid lg:grid-cols-[320px_1fr] gap-4">
+      <div className="grid lg:grid-cols-[400px_1fr] gap-4">
         {/* Choose assessments */}
         <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3 h-fit">
           <div className="text-xs font-bold text-slate-700">1. Choose assessments ({selected.length} ticked)</div>
@@ -276,7 +276,7 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
               <label key={a.id} className={`flex items-start gap-2 p-2 rounded-lg border cursor-pointer text-xs ${selected.includes(a.id) ? "border-purple-300 bg-purple-50" : "border-slate-100 hover:bg-slate-50"}`}>
                 <input type="checkbox" data-testid={`combine-${a.code}`} checked={selected.includes(a.id)} onChange={() => toggle(a.id)} className="mt-0.5" />
                 <span className="min-w-0">
-                  <span className="block font-bold text-slate-800 truncate">{a.title}</span>
+                  <span className="block font-bold text-slate-800 break-words leading-snug" title={a.title}>{a.title}</span>
                   <span className="block text-slate-500">
                     {a.code} · {(a.type || "assessment") === "task" ? "Task" : "Assessment"} · {a.maxMarks || 0} marks{a.createdAt ? ` · ${new Date(a.createdAt).toLocaleDateString()}` : ""}
                   </span>
@@ -307,7 +307,7 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
                 <div className="flex flex-wrap gap-3">
                   {data.map((a) => (
                     <label key={a.id} className="text-xs text-slate-700 flex items-center gap-1.5">
-                      <span className="font-semibold truncate max-w-[180px]">{a.title}</span>
+                      <span className="font-semibold max-w-[260px] break-words">{a.title}</span>
                       <input type="number" min={0} value={weights[a.id] ?? 1} onChange={(e) => setWeights({ ...weights, [a.id]: Number(e.target.value) })} className="w-16 px-2 py-1 rounded-lg border border-slate-300" />
                     </label>
                   ))}
@@ -387,7 +387,7 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
                       <th className="text-left p-2 border-b">Class</th>
                       {data.map((a) => (
                         <th key={a.id} className="text-center p-2 border-b">
-                          <div className="font-bold text-slate-700 max-w-[140px] truncate mx-auto" title={a.title}>{a.title}</div>
+                          <div className="font-bold text-slate-700 max-w-[220px] mx-auto whitespace-normal break-words leading-snug" title={a.title}>{a.title}</div>
                           <div className="font-normal text-slate-400">
                             out of {a.maxMarks}
                             {method === "weights" ? ` · weight ${weights[a.id] ?? 1}` : ""}
