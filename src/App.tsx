@@ -60,6 +60,20 @@ function clearLearnLock() {
     localStorage.removeItem("edexcel_learn_lock");
   } catch (e) {}
 }
+// A browser where a teacher has signed in is a teacher's computer: opening a student link there
+// (to check it) never locks it to the Learning Hub.
+function isTeacherDevice(): boolean {
+  try {
+    return !!localStorage.getItem("edexcel_teacher_device");
+  } catch (e) {
+    return false;
+  }
+}
+function markTeacherDevice() {
+  try {
+    localStorage.setItem("edexcel_teacher_device", String(Date.now()));
+  } catch (e) {}
+}
 
 export function App() {
   const [units, setUnits] = useState<IGCSEUnit[]>(() => {
@@ -137,14 +151,14 @@ export function App() {
       const params = new URLSearchParams(window.location.search);
       const fromLink = (params.get("learn") || "").trim().toUpperCase();
       if (fromLink) {
-        setLearnLock(fromLink);
+        if (!isTeacherDevice()) setLearnLock(fromLink);
         return fromLink;
       }
       // A teacher's link or an assessment/task link always wins over the Learning Hub
       const hash = window.location.hash || "";
       if (params.has("teacher") || params.has("task") || params.has("assessment") || /^#(teacher|staff|task=|assessment=)/.test(hash)) return "";
       if (readExamLock()) return "";
-      const locked = readLearnLock();
+      const locked = isTeacherDevice() ? "" : readLearnLock();
       if (locked) {
         try {
           window.history.replaceState({}, document.title, window.location.pathname + `?learn=${encodeURIComponent(locked)}`);
@@ -422,7 +436,7 @@ export function App() {
     const lock = readExamLock();
     if (!lock) {
       // A browser that has opened a Learning Hub link goes back to the Learning Hub
-      const learnLocked = readLearnLock();
+      const learnLocked = isTeacherDevice() ? "" : readLearnLock();
       if (learnLocked && !learnCode) window.location.replace(window.location.pathname + `?learn=${encodeURIComponent(learnLocked)}`);
       return;
     }
@@ -808,6 +822,7 @@ export function App() {
           <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-2">
             <span className="w-8 h-8 rounded-lg bg-purple-600 text-white flex items-center justify-center font-bold">CS</span>
             <span className="font-bold text-slate-900">Computer Science Learning Hub</span>
+            <a href="/?teacher" className="ml-auto text-xs text-slate-400 hover:text-purple-700">Teacher sign-in</a>
           </div>
         </header>
         <main className="flex-1 w-full px-4 sm:px-6 py-6">
@@ -914,6 +929,7 @@ export function App() {
                   // A teacher signed in on this computer: it is no longer locked to a student's assessment
                   clearExamLock();
                   clearLearnLock();
+                  markTeacherDevice();
                   setIsTeacherAuthenticated(true);
                 }}
                 onCancel={() => setCurrentView("practice")}
