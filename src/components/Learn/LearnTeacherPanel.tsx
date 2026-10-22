@@ -1,3 +1,4 @@
+import { studentOrigin } from "../../utils/studentSite";
 import React, { useEffect, useMemo, useState } from "react";
 import { Plus, Copy, Users, BookOpen, BarChart3, Eye, Trash2, RefreshCw, Link as LinkIcon, X, Check } from "lucide-react";
 import { teacherFetch } from "../../utils/teacherAuth";
@@ -43,7 +44,7 @@ export const LearnTeacherPanel: React.FC = () => {
   const [loading, setLoading] = useState(true);
 
   const selected = classes.find((c) => c.id === selectedId) || null;
-  const link = selected ? `${window.location.origin}/?learn=${selected.code}` : "";
+  const link = selected ? `${studentOrigin()}/?learn=${selected.code}` : "";
 
   const loadClasses = async () => {
     try {

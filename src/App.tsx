@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
+import { isStudentSite, studentSiteKnownOk, checkStudentSite, STUDENT_HOST } from "./utils/studentSite";
 import { Header, AppView } from "./components/Header";
 import { PracticeMode } from "./components/PracticeMode";
 import { TeacherDashboard } from "./components/TeacherDashboard/TeacherDashboard";
@@ -22,6 +23,7 @@ import { AlertTriangle } from "lucide-react";
 // never shows the sign-in box, so students who edit a link cannot reach the teacher side.
 const STAFF_KEY: string = ((import.meta as any).env?.VITE_STAFF_KEY as string) || "bisb-cs-7q4k";
 function isStaffAddress(): boolean {
+  if (isStudentSite()) return false; // the student address never opens the teacher side
   try {
     const p = new URLSearchParams(window.location.search);
     return p.get("teacher") === STAFF_KEY || window.location.hash === `#staff=${STAFF_KEY}`;
@@ -78,8 +80,10 @@ function clearLearnLock() {
 // A browser where a teacher has signed in is a teacher's computer: opening a student link there
 // (to check it) never locks it to the Learning Hub.
 function isTeacherDevice(): boolean {
-  // No exemptions: any browser that opens a student link stays on it (teachers unlock with the staff address)
-  return false;
+  // On the TEACHER address, once the separate student address is set up, nothing is ever locked here:
+  // student links are moved to the student address instead. (Without a student address, every
+  // browser that opens a student link stays on it, as before.)
+  return !isStudentSite() && studentSiteKnownOk();
 }
 function markTeacherDevice() {
   try {
@@ -128,6 +132,16 @@ function rememberedStudentLink(): string {
   try {
     const p = new URLSearchParams(window.location.search);
     const hash = window.location.hash || "";
+    const isStudentLink = !!(p.get("task") || p.get("assessment") || p.get("learn") || p.has("practice") || /^#(practice|task=|assessment=)/.test(hash));
+    if (!isStudentSite()) {
+      // Teacher address: check (in the background) whether the student address is set up.
+      // A student link opened here is moved to the student address.
+      checkStudentSite().then((ok) => {
+        if (ok && isStudentLink) {
+          window.location.replace(`${window.location.protocol}//${STUDENT_HOST}${window.location.pathname}${window.location.search}${window.location.hash}`);
+        }
+      });
+    }
     if (isStaffAddress()) {
       localStorage.removeItem(STUDENT_LINK_KEY);
       localStorage.removeItem("edexcel_exam_lock");
@@ -989,7 +1003,7 @@ export function App() {
   // Anyone who is not a signed-in teacher and not on a student link:
   // - on a teacher's computer, or with the staff address (?teacher): the sign-in box
   // - everyone else (e.g. a student who deleted their link): only a box to type their code again
-  if (!isTeacherAuthenticated && currentView === "teacher" && !staffEntry && !isTeacherDevice()) {
+  if (!isTeacherAuthenticated && currentView === "teacher" && isStudentSite()) {
     return <StudentCodeLanding />;
   }
   if (!isTeacherAuthenticated && currentView === "teacher") {

@@ -1,3 +1,4 @@
+import { studentOrigin } from "./studentSite";
 import QRCode from "qrcode";
 import { Assessment } from "../types";
 
@@ -74,7 +75,7 @@ export function getAssessmentStudentUrl(
   assessmentOrCode: Assessment | string,
   type: "task" | "assessment" = "assessment"
 ): string {
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const origin = studentOrigin();
   const code = typeof assessmentOrCode === "string" ? assessmentOrCode : assessmentOrCode.code;
 
   return `${origin}/?${type}=${encodeURIComponent(code)}`;

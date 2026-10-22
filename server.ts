@@ -3926,6 +3926,12 @@ async function loginWithPreviousDatabase(email: any, password: any, passcode: an
   }
 }
 
+// Lets the teacher address check that the student address is this same app
+app.get("/api/site-check", (_req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.json({ app: "igcse-4cp0" });
+});
+
 // Slow down password guessing: after a few wrong teacher passwords from one address, every
 // further attempt waits longer (up to 15 s). A correct sign-in resets it.
 const loginFailures = new Map<string, { n: number; at: number }>();
