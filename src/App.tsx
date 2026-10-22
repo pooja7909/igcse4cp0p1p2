@@ -437,7 +437,19 @@ export function App() {
     if (!lock) {
       // A browser that has opened a Learning Hub link goes back to the Learning Hub
       const learnLocked = isTeacherDevice() ? "" : readLearnLock();
-      if (learnLocked && !learnCode) window.location.replace(window.location.pathname + `?learn=${encodeURIComponent(learnLocked)}`);
+      if (learnLocked && !learnCode) {
+        window.location.replace(window.location.pathname + `?learn=${encodeURIComponent(learnLocked)}`);
+        return;
+      }
+      // The free practice area is only open to students through the teacher's ?practice link
+      if (currentView === "practice") {
+        let viaLink = false;
+        try {
+          const params = new URLSearchParams(window.location.search);
+          viaLink = params.has("practice") || params.get("view") === "practice" || window.location.hash === "#practice";
+        } catch (e) {}
+        if (!viaLink) setCurrentView("teacher");
+      }
       return;
     }
     setInitialJoinCode(lock.code);
@@ -828,6 +840,30 @@ export function App() {
           <React.Suspense fallback={<div className="p-8 text-center text-slate-500">Loading the Learning Hub...</div>}>
             <LearnStudentApp code={learnCode} />
           </React.Suspense>
+        </main>
+      </div>
+    );
+  }
+
+  // Anyone who is not a signed-in teacher and is not on a student link only sees the sign-in box
+  if (!isTeacherAuthenticated && currentView === "teacher") {
+    return (
+      <div className="min-h-screen bg-slate-100/70 text-slate-900 flex flex-col font-sans">
+        <header className="bg-white border-b border-slate-200">
+          <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-2">
+            <span className="w-8 h-8 rounded-lg bg-purple-600 text-white flex items-center justify-center font-bold">CS</span>
+            <span className="font-bold text-slate-900">Staff sign-in</span>
+          </div>
+        </header>
+        <main className="flex-1 w-full px-4 sm:px-6 py-6">
+          <TeacherAuthGate
+            onAuthenticated={() => {
+              clearExamLock();
+              clearLearnLock();
+              markTeacherDevice();
+              setIsTeacherAuthenticated(true);
+            }}
+          />
         </main>
       </div>
     );

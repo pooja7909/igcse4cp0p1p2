@@ -13,7 +13,7 @@ import { teacherLogin, TeacherProfile } from "../../utils/teacherAuth";
 
 interface TeacherAuthGateProps {
   onAuthenticated: (teacher?: TeacherProfile) => void;
-  onCancel: () => void;
+  onCancel?: () => void;
 }
 
 export const TeacherAuthGate: React.FC<TeacherAuthGateProps> = ({
@@ -185,6 +185,7 @@ export const TeacherAuthGate: React.FC<TeacherAuthGateProps> = ({
         )}
 
         <div className="flex gap-2 pt-2">
+          {onCancel && (
           <button
             type="button"
             onClick={onCancel}
@@ -193,6 +194,7 @@ export const TeacherAuthGate: React.FC<TeacherAuthGateProps> = ({
           >
             <ArrowLeft className="w-3.5 h-3.5" /> Back to Practice
           </button>
+          )}
           <button
             type="submit"
             disabled={isLoading}
