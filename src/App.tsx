@@ -17,6 +17,19 @@ import { syncCustomQuestionToFirestore, subscribeToCustomQuestions } from "./fir
 const LearnStudentApp = React.lazy(() => import("./components/Learn/LearnStudentApp").then((m) => ({ default: m.LearnStudentApp })));
 import { AlertTriangle } from "lucide-react";
 
+// ---------- The private staff address ----------
+// Teachers sign in at  /?teacher=STAFF_KEY  (bookmark it). Any other address - including a plain ?teacher -
+// never shows the sign-in box, so students who edit a link cannot reach the teacher side.
+const STAFF_KEY: string = ((import.meta as any).env?.VITE_STAFF_KEY as string) || "bisb-cs-7q4k";
+function isStaffAddress(): boolean {
+  try {
+    const p = new URLSearchParams(window.location.search);
+    return p.get("teacher") === STAFF_KEY || window.location.hash === `#staff=${STAFF_KEY}`;
+  } catch (e) {
+    return false;
+  }
+}
+
 // ---------- Keeping students on the assessment / task they were sent to ----------
 // Opening a teacher's link (?task=CODE or ?assessment=CODE) locks this browser to it for the
 // rest of the day, also after submitting, so students cannot reach the main site (Practice)
@@ -65,11 +78,8 @@ function clearLearnLock() {
 // A browser where a teacher has signed in is a teacher's computer: opening a student link there
 // (to check it) never locks it to the Learning Hub.
 function isTeacherDevice(): boolean {
-  try {
-    return !!localStorage.getItem("edexcel_teacher_device");
-  } catch (e) {
-    return false;
-  }
+  // No exemptions: any browser that opens a student link stays on it (teachers unlock with the staff address)
+  return false;
 }
 function markTeacherDevice() {
   try {
@@ -117,6 +127,12 @@ function rememberedStudentLink(): string {
   try {
     const p = new URLSearchParams(window.location.search);
     const hash = window.location.hash || "";
+    if (isStaffAddress()) {
+      localStorage.removeItem(STUDENT_LINK_KEY);
+      localStorage.removeItem("edexcel_exam_lock");
+      localStorage.removeItem("edexcel_learn_lock");
+      return;
+    }
     const studentLink = p.get("task") || p.get("assessment") || p.get("learn") || p.has("practice") || /^#(practice|task=|assessment=)/.test(hash);
     if (studentLink) {
       rememberStudentLink();
@@ -238,7 +254,7 @@ export function App() {
       if (typeof window !== "undefined") {
         const params = new URLSearchParams(window.location.search);
         const hash = window.location.hash;
-        if (params.has("teacher") || params.get("view") === "teacher" || hash === "#teacher" || hash === "#staff") {
+        if (isStaffAddress()) {
           return "teacher";
         }
         if (params.has("join") || params.has("assessment") || params.has("task") || hash.startsWith("#task=") || hash.startsWith("#assessment=")) {
@@ -262,7 +278,7 @@ export function App() {
   const [staffEntry] = useState<boolean>(() => {
     try {
       const params = new URLSearchParams(window.location.search);
-      return params.has("teacher") || params.get("view") === "teacher" || window.location.hash === "#teacher" || window.location.hash === "#staff";
+      return isStaffAddress();
     } catch {
       return false;
     }
@@ -278,7 +294,7 @@ export function App() {
       }
       // A teacher's link or an assessment/task link always wins over the Learning Hub
       const hash = window.location.hash || "";
-      if (params.has("teacher") || params.has("task") || params.has("assessment") || /^#(teacher|staff|task=|assessment=)/.test(hash)) return "";
+      if (isStaffAddress() || params.has("task") || params.has("assessment") || /^#(task=|assessment=)/.test(hash)) return "";
       if (readExamLock()) return "";
       const locked = isTeacherDevice() ? "" : readLearnLock();
       if (locked) {
@@ -552,7 +568,7 @@ export function App() {
     if (currentView === "teacher") {
       try {
         const params = new URLSearchParams(window.location.search);
-        if (params.has("teacher") || window.location.hash === "#teacher" || window.location.hash === "#staff") return;
+        if (isStaffAddress()) return;
       } catch (e) {}
     }
     const lock = readExamLock();
@@ -608,7 +624,7 @@ export function App() {
 
       // No link in the address, but this browser is in the middle of a formal assessment
       // (e.g. the student deleted the end of the link): send them back to it.
-      if (!urlParams.has("teacher")) {
+      if (!isStaffAddress()) {
         try {
           const lock = readExamLock();
           if (lock) {
@@ -646,7 +662,7 @@ export function App() {
           setDedicatedStudentMode({ type: "assessment" });
           setCurrentView("exam_join");
         }
-      } else if (hash === "#teacher" || hash === "#staff" || urlParams.has("teacher")) {
+      } else if (isStaffAddress()) {
         setCurrentView("teacher");
       }
     };
