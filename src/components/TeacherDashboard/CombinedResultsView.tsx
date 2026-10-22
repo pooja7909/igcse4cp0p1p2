@@ -36,6 +36,7 @@ interface SavedCombo {
   weights: Record<string, number>;
   missing: "zero" | "skip";
   boundaries: string;
+  alts?: Record<string, string[]>;
 }
 
 const SAVED_KEY = "edexcel_combined_results_v1";
@@ -57,6 +58,9 @@ function saveJSON(key: string, v: any) {
 
 export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ assessments }) => {
   const [selected, setSelected] = useState<string[]>([]);
+  // Different versions of an assessment (e.g. a catch-up paper with other questions): mainId -> other ids
+  const [alts, setAlts] = useState<Record<string, string[]>>({});
+  const [allById, setAllById] = useState<Record<string, CAssessment>>({});
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<"all" | "assessment" | "task">("all");
   const [data, setData] = useState<CAssessment[]>([]);
@@ -89,12 +93,14 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
     let cancelled = false;
     setLoading(true);
     setError("");
-    teacherFetch("/api/combined-results", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: selected }) })
+    const want = Array.from(new Set([...selected, ...selected.flatMap((id) => alts[id] || [])]));
+    teacherFetch("/api/combined-results", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: want }) })
       .then((r) => r.json())
       .then((d) => {
         if (cancelled) return;
         const byId: Record<string, CAssessment> = {};
         (d.assessments || []).forEach((a: CAssessment) => (byId[a.id] = a));
+        setAllById(byId);
         setData(selected.map((id) => byId[id]).filter(Boolean));
       })
       .catch(() => !cancelled && setError("Could not load the results. Please try again."))
@@ -102,7 +108,7 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
     return () => {
       cancelled = true;
     };
-  }, [selected.join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selected.join("|"), JSON.stringify(alts)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggle = (id: string) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   const setLink = (from: string, to: string) => {
@@ -125,20 +131,30 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
 
   // One row per student (names matched ignoring case/spaces, plus any links the teacher made)
   const rows = useMemo(() => {
-    const map: Record<string, { key: string; names: Set<string>; classes: Set<string>; cand: string; res: Record<string, { marks: number; max: number; pct: number; attempts: number }> }> = {};
+    const map: Record<string, { key: string; names: Set<string>; classes: Set<string>; cand: string; res: Record<string, { marks: number; max: number; pct: number; attempts: number; alt?: string; altRaw?: string }> }> = {};
     data.forEach((a) => {
-      a.students.forEach((s) => {
-        if (s.status !== "submitted") return;
-        const key = resolve(normName(s.name));
-        if (!key) return;
-        const row = (map[key] = map[key] || { key, names: new Set(), classes: new Set(), cand: "", res: {} });
-        row.names.add(s.name.trim());
-        if (s.className) row.classes.add(s.className);
-        if (s.candidateNumber) row.cand = s.candidateNumber;
-        const max = s.maxMarks || a.maxMarks || 0;
-        const prev = row.res[a.id];
-        if (!prev || s.totalMarks > prev.marks) row.res[a.id] = { marks: s.totalMarks, max, pct: max ? (s.totalMarks / max) * 100 : 0, attempts: (prev?.attempts || 0) + 1 };
-        else prev.attempts += 1;
+      // the assessment itself, plus any different versions of it
+      const sources = [a, ...(alts[a.id] || []).map((id) => allById[id]).filter(Boolean)];
+      sources.forEach((src) => {
+        const isAlt = src.id !== a.id;
+        src.students.forEach((s) => {
+          if (s.status !== "submitted") return;
+          const key = resolve(normName(s.name));
+          if (!key) return;
+          const row = (map[key] = map[key] || { key, names: new Set(), classes: new Set(), cand: "", res: {} });
+          row.names.add(s.name.trim());
+          if (s.className) row.classes.add(s.className);
+          if (s.candidateNumber) row.cand = s.candidateNumber;
+          const srcMax = s.maxMarks || src.maxMarks || 0;
+          const pct = srcMax ? (s.totalMarks / srcMax) * 100 : 0;
+          // A different version is converted to this assessment's marks using the percentage
+          const entry = isAlt
+            ? { marks: Math.round(((pct / 100) * a.maxMarks) * 10) / 10, max: a.maxMarks, pct, attempts: 1, alt: src.title, altRaw: `${s.totalMarks}/${srcMax}` }
+            : { marks: s.totalMarks, max: srcMax, pct, attempts: 1 };
+          const prev = row.res[a.id];
+          if (!prev || entry.pct > prev.pct) row.res[a.id] = { ...entry, attempts: (prev?.attempts || 0) + 1 };
+          else prev.attempts += 1;
+        });
       });
     });
     const out = Object.values(map).map((r) => {
@@ -172,7 +188,7 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
       };
     });
     return out;
-  }, [data, links, method, weights, missing, bounds]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [data, links, method, weights, missing, bounds, alts, allById]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const classes = useMemo(() => Array.from(new Set(rows.flatMap((r) => r.className.split(", ").filter(Boolean)))).sort(), [rows]);
   const shown = useMemo(
@@ -197,7 +213,7 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
         r.name,
         r.cand,
         r.className,
-        ...data.flatMap((a) => (r.res[a.id] ? [`${r.res[a.id].marks}/${r.res[a.id].max}`, r.res[a.id].pct.toFixed(1)] : ["absent", ""])),
+        ...data.flatMap((a) => (r.res[a.id] ? [`${r.res[a.id].marks}/${r.res[a.id].max}${r.res[a.id].alt ? ` (other version: ${r.res[a.id].alt} ${r.res[a.id].altRaw})` : ""}`, r.res[a.id].pct.toFixed(1)] : ["absent", ""])),
         method === "marks" ? `${r.marks}/${r.maxSum}` : "",
         r.pct.toFixed(1),
         r.grade.grade,
@@ -213,7 +229,7 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
 
   const saveCombo = () => {
     const name = saveName.trim() || data.map((a) => a.title).join(" + ");
-    const next = [...saved.filter((s) => s.name !== name), { name, ids: selected, method, weights, missing, boundaries }];
+    const next = [...saved.filter((s) => s.name !== name), { name, ids: selected, method, weights, missing, boundaries, alts }];
     setSaved(next);
     saveJSON(SAVED_KEY, next);
     setSaveName("");
@@ -224,6 +240,7 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
     setWeights(c.weights || {});
     setMissing(c.missing);
     setBoundaries(c.boundaries || "first");
+    setAlts(c.alts || {});
   };
   const deleteCombo = (name: string) => {
     const next = saved.filter((s) => s.name !== name);
@@ -347,6 +364,39 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
                   </label>
                 )}
               </div>
+              <div className="rounded-xl border border-sky-200 bg-sky-50/60 p-3 space-y-2">
+                <div className="text-xs font-bold text-sky-900">Students who sat a different version (other questions)</div>
+                <p className="text-[11px] text-sky-800">If some students did a catch-up or alternative paper instead, add it here. Their percentage on that paper is used for this assessment, converted to its marks.</p>
+                {data.map((a) => (
+                  <div key={a.id} className="flex flex-wrap items-center gap-1.5 text-xs">
+                    <span className="font-semibold text-slate-700 break-words max-w-[260px]">{a.title}:</span>
+                    {(alts[a.id] || []).map((id) => (
+                      <span key={id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-sky-200 text-sky-900">
+                        {allById[id]?.title || assessments.find((x) => x.id === id)?.title || id}
+                        <button type="button" title="Remove" onClick={() => setAlts({ ...alts, [a.id]: (alts[a.id] || []).filter((x) => x !== id) })} className="text-slate-400 hover:text-rose-600">
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    ))}
+                    <select
+                      value=""
+                      data-testid={`alt-${a.code}`}
+                      onChange={(e) => e.target.value && setAlts({ ...alts, [a.id]: [...(alts[a.id] || []), e.target.value] })}
+                      className="px-2 py-1 rounded-lg border border-sky-200 bg-white text-xs max-w-[280px]"
+                    >
+                      <option value="">+ add a different version...</option>
+                      {assessments
+                        .filter((x) => !selected.includes(x.id) && !Object.values(alts).some((l) => l.includes(x.id)))
+                        .sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0))
+                        .map((x) => (
+                          <option key={x.id} value={x.id}>
+                            {x.title} ({x.code})
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
               <div className="flex flex-wrap items-center gap-2 pt-1">
                 <input value={saveName} onChange={(e) => setSaveName(e.target.value)} placeholder="Name to save, e.g. Y11 Python combined" className="px-2 py-1.5 rounded-lg border border-slate-300 text-xs w-64" />
                 <button type="button" onClick={saveCombo} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-800 text-white text-xs font-bold">
@@ -416,6 +466,11 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
                                 <span>
                                   <span className="font-bold text-slate-800">{x.marks}</span>
                                   <span className="text-slate-400">/{x.max}</span> <span className="text-slate-500">({Math.round(x.pct)}%)</span>
+                                  {x.alt && (
+                                    <span className="ml-1 text-[10px] px-1 rounded bg-sky-100 text-sky-800 font-bold" title={`Sat a different version: "${x.alt}" (${x.altRaw}), converted using the percentage`}>
+                                      other version
+                                    </span>
+                                  )}
                                   {x.attempts > 1 && <span className="ml-1 text-[10px] text-amber-600" title="Best of several attempts">best of {x.attempts}</span>}
                                 </span>
                               ) : (
