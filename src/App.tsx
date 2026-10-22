@@ -109,6 +109,7 @@ function rememberStudentLink() {
       days = 120;
     }
     if (link) localStorage.setItem(STUDENT_LINK_KEY, JSON.stringify({ link, at: Date.now(), days }));
+    if (link && !link.startsWith("?task=") && !link.startsWith("?assessment=")) localStorage.removeItem("edexcel_exam_lock");
   } catch (e) {}
 }
 function rememberedStudentLink(): string {
@@ -563,6 +564,7 @@ export function App() {
   // Practice", the menu), send them back to their assessment or task.
   useEffect(() => {
     if (isTeacherAuthenticated) return;
+    if (learnCode) return;
     if (currentView !== "practice" && currentView !== "teacher") return;
     // Someone who typed ?teacher on purpose may sign in (that is how a teacher unlocks a computer)
     if (currentView === "teacher") {
@@ -601,6 +603,7 @@ export function App() {
   // Handle URL query parameters and hash changes (e.g. ?task=CODE or ?assessment=CODE or #task=CODE or #assessment=CODE)
   useEffect(() => {
     const parseUrlRoute = () => {
+      if (learnCode) return; // the Learning Hub is showing: leave the address alone
       // 1. Check search query parameters: ?task=CODE or ?assessment=CODE
       const urlParams = new URLSearchParams(window.location.search);
       const taskParam = urlParams.get("task");
