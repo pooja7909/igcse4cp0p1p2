@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Layers, Download, Printer, Save, Trash2, Search, Link2, X } from "lucide-react";
 import { Assessment } from "../../types";
 import { teacherFetch } from "../../utils/teacherAuth";
-import { getEdexcelGrade, GRADE_BOUNDARY_PRESETS, GradeBoundaries } from "../../utils/gradeBoundaries";
+import { getEdexcelGrade, GRADE_BOUNDARY_PRESETS, GradeBoundaries, EDEXCEL_STANDARD_BOUNDARIES } from "../../utils/gradeBoundaries";
 
 // Merge the results of several assessments (e.g. two Year 11 Python assessments) into one
 // combined mark, percentage and grade per student.
@@ -41,6 +41,16 @@ interface SavedCombo {
 
 const SAVED_KEY = "edexcel_combined_results_v1";
 const MERGE_KEY = "edexcel_combined_name_links_v1";
+// The total marks students actually sat (the most common total among submitted work).
+// If questions were changed after students sat it, the stored total can differ from this.
+function realMax(a: { maxMarks: number; students: { status: string; maxMarks: number }[] }): number {
+  const counts: Record<number, number> = {};
+  a.students.forEach((s) => {
+    if (s.status === "submitted" && s.maxMarks > 0) counts[s.maxMarks] = (counts[s.maxMarks] || 0) + 1;
+  });
+  const best = Object.entries(counts).sort((x, y) => y[1] - x[1])[0];
+  return best ? Number(best[0]) : a.maxMarks || 0;
+}
 const normName = (n: string) => String(n || "").trim().toLowerCase().replace(/\s+/g, " ");
 
 function loadJSON<T>(key: string, fallback: T): T {
@@ -126,8 +136,9 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
 
   const bounds: Partial<GradeBoundaries> | null = useMemo(() => {
     if (boundaries === "first") return data[0]?.gradeBoundaries || null;
+    if (boundaries.startsWith("a:")) return allById[boundaries.slice(2)]?.gradeBoundaries || null;
     return GRADE_BOUNDARY_PRESETS.find((p) => p.id === boundaries)?.boundaries || null;
-  }, [boundaries, data]);
+  }, [boundaries, data, allById]);
 
   // One row per student (names matched ignoring case/spaces, plus any links the teacher made)
   const rows = useMemo(() => {
@@ -149,7 +160,7 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
           const pct = srcMax ? (s.totalMarks / srcMax) * 100 : 0;
           // A different version is converted to this assessment's marks using the percentage
           const entry = isAlt
-            ? { marks: Math.round(((pct / 100) * a.maxMarks) * 10) / 10, max: a.maxMarks, pct, attempts: 1, alt: src.title, altRaw: `${s.totalMarks}/${srcMax}` }
+            ? { marks: Math.round(((pct / 100) * realMax(a)) * 10) / 10, max: realMax(a), pct, attempts: 1, alt: src.title, altRaw: `${s.totalMarks}/${srcMax}` }
             : { marks: s.totalMarks, max: srcMax, pct, attempts: 1 };
           const prev = row.res[a.id];
           if (!prev || entry.pct > prev.pct) row.res[a.id] = { ...entry, attempts: (prev?.attempts || 0) + 1 };
@@ -163,7 +174,7 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
         const x = r.res[a.id];
         if (!x && missing === "skip") return;
         const pct = x ? x.pct : 0;
-        const max = x ? x.max : a.maxMarks;
+        const max = x ? x.max : realMax(a);
         marks += x ? x.marks : 0;
         maxSum += max;
         counted++;
@@ -343,6 +354,11 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
                   Grade boundaries:
                   <select value={boundaries} onChange={(e) => setBoundaries(e.target.value)} className="px-2 py-1 rounded-lg border border-slate-300">
                     <option value="first">as set on "{data[0]?.title}"</option>
+                    {[...data.slice(1), ...data.flatMap((a) => (alts[a.id] || []).map((id) => allById[id]).filter(Boolean))].map((a) => (
+                      <option key={a.id} value={`a:${a.id}`}>
+                        as set on "{a.title}"
+                      </option>
+                    ))}
                     {GRADE_BOUNDARY_PRESETS.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.name}
@@ -350,6 +366,9 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
                     ))}
                   </select>
                 </label>
+                <span className="basis-full text-[11px] text-slate-500" data-testid="boundaries-used">
+                  Boundaries in use: grade {([9, 8, 7, 6, 5, 4, 3, 2, 1] as const).map((g) => `${g} ≥ ${({ ...EDEXCEL_STANDARD_BOUNDARIES, ...(bounds || {}) } as GradeBoundaries)[g]}%`).join(", ")}
+                </span>
                 {classes.length > 1 && (
                   <label className="flex items-center gap-1.5">
                     Class:
@@ -439,7 +458,12 @@ export const CombinedResultsView: React.FC<{ assessments: Assessment[] }> = ({ a
                         <th key={a.id} className="text-center p-2 border-b">
                           <div className="font-bold text-slate-700 max-w-[220px] mx-auto whitespace-normal break-words leading-snug" title={a.title}>{a.title}</div>
                           <div className="font-normal text-slate-400">
-                            out of {a.maxMarks}
+                            out of {realMax(a)}
+                            {realMax(a) !== a.maxMarks && a.maxMarks > 0 && (
+                              <span className="block text-amber-600" title="The assessment was changed after students sat it">
+                                (now set as {a.maxMarks})
+                              </span>
+                            )}
                             {method === "weights" ? ` · weight ${weights[a.id] ?? 1}` : ""}
                           </div>
                         </th>
