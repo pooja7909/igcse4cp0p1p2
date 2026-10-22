@@ -6182,6 +6182,35 @@ app.delete("/api/assessments/:id/students/:studentId", requireTeacher, (req, res
 });
 
 // Teacher views live progress & analytics (Protected with requireTeacher)
+// Combined results: the submitted scores of several assessments, for merging into one mark/grade per student
+app.post("/api/combined-results", requireTeacher, (req, res) => {
+  const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids.slice(0, 12).map(String) : [];
+  const out = ids
+    .map((id) => assessmentsDb[id] || (Object.values(assessmentsDb).find((x) => x.code === id.toUpperCase()) as AssessmentStore))
+    .filter(Boolean)
+    .map((a: any) => ({
+      id: a.id,
+      title: a.title,
+      code: a.code,
+      type: a.type || "assessment",
+      maxMarks: a.maxMarks || 0,
+      createdAt: a.createdAt || 0,
+      classGroup: a.classGroup || "",
+      gradeBoundaries: a.gradeBoundaries || null,
+      students: Object.values(a.students || {}).map((s: any) => ({
+        studentId: s.studentId,
+        name: s.name,
+        className: s.className || a.classGroup || "",
+        candidateNumber: s.candidateNumber || "",
+        status: s.status,
+        totalMarks: Number(s.totalMarks) || 0,
+        maxMarks: Number(s.maxMarks) || a.maxMarks || 0,
+        submittedAt: s.submittedAt || 0,
+      })),
+    }));
+  res.json({ assessments: out });
+});
+
 app.get("/api/assessments/:id/live", requireTeacher, (req, res) => {
   let a = assessmentsDb[req.params.id];
   if (!a) {
