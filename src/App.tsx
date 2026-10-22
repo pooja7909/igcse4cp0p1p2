@@ -822,7 +822,6 @@ export function App() {
           <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-2">
             <span className="w-8 h-8 rounded-lg bg-purple-600 text-white flex items-center justify-center font-bold">CS</span>
             <span className="font-bold text-slate-900">Computer Science Learning Hub</span>
-            <a href="/?teacher" className="ml-auto text-xs text-slate-400 hover:text-purple-700">Teacher sign-in</a>
           </div>
         </header>
         <main className="flex-1 w-full px-4 sm:px-6 py-6">
