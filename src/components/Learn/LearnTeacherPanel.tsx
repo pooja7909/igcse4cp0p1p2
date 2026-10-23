@@ -1,6 +1,9 @@
 import { studentOrigin } from "../../utils/studentSite";
 import React, { useEffect, useMemo, useState } from "react";
-import { Plus, Copy, Users, BookOpen, BarChart3, Eye, Trash2, RefreshCw, Link as LinkIcon, X, Check } from "lucide-react";
+import { Plus, Copy, Users, BookOpen, BarChart3, Eye, Trash2, RefreshCw, Link as LinkIcon, X, Check, Pencil, FolderOpen, ArrowUp, ArrowDown } from "lucide-react";
+import type { TeacherResource } from "../Resources/resourceTypes";
+import { ResourceTypeIcon, TopicBadges, typeLabel, viewMode, needsPieces, downloadResource } from "../Resources/resourceTypes";
+import { ResourceViewer } from "../Resources/ResourceViewer";
 import { teacherFetch } from "../../utils/teacherAuth";
 import { LEARN_LESSONS, LEARN_LESSON_MAP } from "../../data/learnLessons";
 import type { LearnStudent, LearnLesson } from "./learnTypes";
@@ -20,6 +23,7 @@ interface TClass {
   createdAt?: number;
   studentCount?: number;
   lastActiveAt?: number;
+  resourceIds?: string[];
 }
 
 const addDays = (d: string, n: number) => {
@@ -32,7 +36,15 @@ export const LearnTeacherPanel: React.FC = () => {
   const [classes, setClasses] = useState<TClass[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
   const [newName, setNewName] = useState("");
-  const [tab, setTab] = useState<"lessons" | "progress" | "preview">("lessons");
+  const [tab, setTab] = useState<"lessons" | "progress" | "preview" | "resources">("lessons");
+  // Class name editing
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+  // Teacher resources shared with the selected class (ordered)
+  const [library, setLibrary] = useState<TeacherResource[] | null>(null);
+  const [resDraft, setResDraft] = useState<string[]>([]);
+  const [resDirty, setResDirty] = useState(false);
+  const [resViewer, setResViewer] = useState<{ resource: TeacherResource; src: string; access?: string } | null>(null);
   const [paper, setPaper] = useState<"all" | "Paper 1" | "Paper 2">("all");
   const [draft, setDraft] = useState<TClass["assignments"]>({});
   const [dirty, setDirty] = useState(false);
@@ -76,9 +88,72 @@ export const LearnTeacherPanel: React.FC = () => {
       setDirty(false);
       setStudents([]);
       setStudentOpen(null);
+      setRenaming(false);
+      setResDraft(selected.resourceIds || []);
+      setResDirty(false);
       loadProgress(selected.id);
     }
   }, [selectedId, classes.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadLibrary = async () => {
+    const r = await teacherFetch("/api/resources");
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) {
+      setLibrary(d.resources || []);
+      // Keep each class's list in step with the server (e.g. shared from My Resources)
+      const byId: Record<string, string[]> = {};
+      for (const c of d.classes || []) byId[c.id] = c.resourceIds || [];
+      setClasses((cs) => cs.map((c) => (byId[c.id] ? { ...c, resourceIds: byId[c.id] } : c)));
+      if (!resDirty && selectedId && byId[selectedId]) setResDraft(byId[selectedId]);
+    }
+  };
+  const saveResources = async () => {
+    if (!selected) return;
+    const r = await teacherFetch(`/api/learn/classes/${selected.id}/resources`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resourceIds: resDraft }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return flash(d.error || "Could not save");
+    setClasses((cs) => cs.map((c) => (c.id === selected.id ? { ...c, resourceIds: d.resourceIds } : c)));
+    setResDraft(d.resourceIds);
+    setResDirty(false);
+    flash(`✓ Saved: ${d.resourceIds.length} resource(s) shared with ${selected.name}.`);
+  };
+  const moveResource = (id: string, dir: -1 | 1) => {
+    setResDraft((list) => {
+      const i = list.indexOf(id);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= list.length) return list;
+      const next = [...list];
+      [next[i], next[j]] = [next[j], next[i]];
+      return next;
+    });
+    setResDirty(true);
+  };
+  const previewResource = async (res: TeacherResource) => {
+    if (res.kind === "link") return setResViewer({ resource: res, src: res.url || "" });
+    const r = await teacherFetch(`/api/resources/${encodeURIComponent(res.id)}/ticket`);
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return flash(d.error || "Could not open the resource");
+    if (viewMode(res) !== "download") setResViewer({ resource: res, src: d.url, access: d.access });
+    else if (!needsPieces(res)) window.open(d.url, "_blank", "noopener");
+    else {
+      flash(`Downloading "${res.title}"...`);
+      downloadResource(res, d.access).catch((e) => flash(e?.message || "Could not download the file."));
+    }
+  };
+
+  const saveName = async () => {
+    const name = renameValue.replace(/\s+/g, " ").trim();
+    if (!name) return flash("Please give the class a name.");
+    const saved = await updateClass({ name });
+    if (saved) {
+      setRenaming(false);
+      flash(`✓ Class renamed to "${saved.name}".`);
+    }
+  };
   useEffect(() => {
     if (tab !== "progress" || !selectedId) return;
     const t = setInterval(() => loadProgress(), 30000);
@@ -210,7 +285,46 @@ export const LearnTeacherPanel: React.FC = () => {
             <>
               <div className="p-4 rounded-2xl bg-white border border-slate-200 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="text-lg font-bold text-slate-900">{selected.name}</h3>
+                  {renaming ? (
+                    <div className="flex items-center gap-1.5 flex-1 min-w-[220px]">
+                      <input
+                        autoFocus
+                        value={renameValue}
+                        maxLength={60}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") saveName();
+                          if (e.key === "Escape") setRenaming(false);
+                        }}
+                        data-testid="rename-class-input"
+                        className="flex-1 min-w-0 px-2 py-1 border-2 border-purple-300 rounded-lg text-lg font-bold"
+                        aria-label="Class name"
+                      />
+                      <button type="button" onClick={saveName} data-testid="rename-class-save" className="p-1.5 rounded-lg bg-purple-600 text-white" title="Save name">
+                        <Check className="w-4 h-4" />
+                      </button>
+                      <button type="button" onClick={() => setRenaming(false)} className="p-1.5 rounded-lg hover:bg-slate-100" title="Cancel">
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <h3 className="text-lg font-bold text-slate-900 inline-flex items-center gap-1.5">
+                      {selected.name}
+                      <button
+                        type="button"
+                        data-testid="rename-class"
+                        onClick={() => {
+                          setRenameValue(selected.name);
+                          setRenaming(true);
+                        }}
+                        className="p-1 rounded-lg text-slate-400 hover:text-purple-700 hover:bg-purple-50"
+                        title="Rename this class"
+                        aria-label="Rename this class"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                    </h3>
+                  )}
                   <button type="button" onClick={deleteClass} className="text-xs font-bold text-rose-600 inline-flex items-center gap-1">
                     <Trash2 className="w-3.5 h-3.5" /> Delete class
                   </button>
@@ -249,9 +363,10 @@ export const LearnTeacherPanel: React.FC = () => {
                     ["lessons", "Set lessons", <BookOpen key="a" className="w-4 h-4" />],
                     ["progress", `Progress (${students.length})`, <BarChart3 key="b" className="w-4 h-4" />],
                     ["preview", "Preview lessons", <Eye key="c" className="w-4 h-4" />],
+                    ["resources", `Resources (${(selected.resourceIds || []).length})`, <FolderOpen key="d" className="w-4 h-4" />],
                   ] as const
                 ).map(([k, label, icon]) => (
-                  <button key={k} type="button" data-testid={`learn-tab-${k}`} onClick={() => { setTab(k); if (k === "progress") loadProgress(); }} className={`flex-1 px-3 py-2 rounded-xl text-sm font-bold inline-flex items-center justify-center gap-1.5 ${tab === k ? "bg-white shadow text-slate-900" : "text-slate-600"}`}>
+                  <button key={k} type="button" data-testid={`learn-tab-${k}`} onClick={() => { setTab(k); if (k === "progress") loadProgress(); if (k === "resources") loadLibrary(); }} className={`flex-1 px-3 py-2 rounded-xl text-sm font-bold inline-flex items-center justify-center gap-1.5 ${tab === k ? "bg-white shadow text-slate-900" : "text-slate-600"}`}>
                     {icon} {label}
                   </button>
                 ))}
@@ -324,6 +439,67 @@ export const LearnTeacherPanel: React.FC = () => {
                       <div className="text-xs text-slate-500">{L.summary}</div>
                     </button>
                   ))}
+                </div>
+              )}
+
+              {tab === "resources" && (
+                <div className="p-3 rounded-2xl bg-white border border-slate-200 space-y-3" data-testid="learn-resources">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-xs text-slate-600">
+                      Tick the resources students in <b>{selected.name}</b> can open (your web pages, worksheets, links). Use the arrows to set the order they see. Upload new ones in the 📁 My Resources tab.
+                    </div>
+                    <button type="button" data-testid="save-resources" disabled={!resDirty} onClick={saveResources} className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-sm font-bold disabled:opacity-40">
+                      {resDirty ? "Save resources" : "Saved"}
+                    </button>
+                  </div>
+                  {library === null ? (
+                    <div className="text-xs text-slate-400">Loading...</div>
+                  ) : library.length === 0 ? (
+                    <div className="p-4 text-center text-sm text-slate-500">You have no resources yet. Add them in the 📁 My Resources tab.</div>
+                  ) : (
+                    <>
+                      {resDraft.filter((id) => library.some((r) => r.id === id)).length > 0 && (
+                        <div className="space-y-1">
+                          <div className="text-xs font-extrabold uppercase tracking-wider text-emerald-700">Students see (in this order)</div>
+                          {resDraft
+                            .map((id) => library.find((r) => r.id === id))
+                            .filter((r): r is TeacherResource => Boolean(r))
+                            .map((r, i, arr) => (
+                              <div key={r.id} className="flex items-center gap-2 p-2 rounded-xl border border-emerald-200 bg-emerald-50/50">
+                                <input type="checkbox" checked onChange={() => { setResDraft((d) => d.filter((x) => x !== r.id)); setResDirty(true); }} data-testid={`res-tick-${r.id}`} />
+                                <ResourceTypeIcon r={r} className="w-4 h-4" />
+                                <span className="text-sm font-bold text-slate-900 flex-1 min-w-0 truncate">{r.title}</span>
+                                <TopicBadges topics={r.topics} paper={r.paper} />
+                                <button type="button" disabled={i === 0} onClick={() => moveResource(r.id, -1)} className="p-1 rounded hover:bg-white disabled:opacity-30" title="Move up">
+                                  <ArrowUp className="w-3.5 h-3.5" />
+                                </button>
+                                <button type="button" disabled={i === arr.length - 1} onClick={() => moveResource(r.id, 1)} className="p-1 rounded hover:bg-white disabled:opacity-30" title="Move down">
+                                  <ArrowDown className="w-3.5 h-3.5" />
+                                </button>
+                                <button type="button" onClick={() => previewResource(r)} className="px-2 py-0.5 rounded-lg border border-slate-300 text-[11px] font-bold text-slate-600">
+                                  View
+                                </button>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                      <div className="space-y-1">
+                        <div className="text-xs font-extrabold uppercase tracking-wider text-slate-500">Not shared with this class</div>
+                        {library.filter((r) => !resDraft.includes(r.id)).length === 0 && <div className="text-xs text-slate-400">All your resources are shared with this class.</div>}
+                        {library
+                          .filter((r) => !resDraft.includes(r.id))
+                          .map((r) => (
+                            <label key={r.id} className="flex items-center gap-2 p-2 rounded-xl border border-slate-200 cursor-pointer hover:bg-slate-50">
+                              <input type="checkbox" checked={false} onChange={() => { setResDraft((d) => [...d, r.id]); setResDirty(true); }} data-testid={`res-tick-${r.id}`} />
+                              <ResourceTypeIcon r={r} className="w-4 h-4" />
+                              <span className="text-sm font-semibold text-slate-800 flex-1 min-w-0 truncate">{r.title}</span>
+                              <span className="text-[11px] text-slate-500">{typeLabel(r)}</span>
+                              <TopicBadges topics={r.topics} paper={r.paper} />
+                            </label>
+                          ))}
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -424,6 +600,8 @@ export const LearnTeacherPanel: React.FC = () => {
           )}
         </div>
       </div>
+
+      {resViewer && <ResourceViewer resource={resViewer.resource} src={resViewer.src} access={resViewer.access} onClose={() => setResViewer(null)} />}
 
       {/* Student detail with timestamps */}
       {st && selected && (

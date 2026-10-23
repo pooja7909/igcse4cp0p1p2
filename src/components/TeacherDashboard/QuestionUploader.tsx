@@ -54,12 +54,18 @@ interface QuestionUploaderProps {
   units: IGCSEUnit[];
   onQuestionAdded: (newTask: IGCSETask) => void;
   onQuestionsBatchAdded?: (newTasks: IGCSETask[]) => void;
+  /** A file sent here from "My Resources" (PDF, image, or the text of a Word file), ready to convert. */
+  preload?: { doc: UploadedDoc; intent: "bank" | "assessment" } | null;
+  /** For intent "assessment": called instead of onQuestionsBatchAdded when the checked questions are saved. */
+  onAssessmentQuestionsSaved?: (newTasks: IGCSETask[], paperTitle: string) => void;
 }
 
 export const QuestionUploader: React.FC<QuestionUploaderProps> = ({
   units,
   onQuestionAdded,
   onQuestionsBatchAdded,
+  preload,
+  onAssessmentQuestionsSaved,
 }) => {
   // Workflow mode: "batch_paper" (default: full past paper + mark scheme pipeline), "convert" (single question), "generate_similar" (synthesis), "json_import"
   const [mode, setMode] = useState<"batch_paper" | "convert" | "generate_similar" | "json_import">("batch_paper");
@@ -86,7 +92,7 @@ export const QuestionUploader: React.FC<QuestionUploaderProps> = ({
   });
 
   // Dual document state: Question file and Mark Scheme file
-  const [questionDoc, setQuestionDoc] = useState<UploadedDoc | null>(null);
+  const [questionDoc, setQuestionDoc] = useState<UploadedDoc | null>(() => (preload ? preload.doc : null));
   const [markSchemeDoc, setMarkSchemeDoc] = useState<UploadedDoc | null>(null);
 
   // Drag states
@@ -722,6 +728,10 @@ export const QuestionUploader: React.FC<QuestionUploaderProps> = ({
 
     try {
       setIsProcessing(true);
+      if (preload?.intent === "assessment" && onAssessmentQuestionsSaved) {
+        onAssessmentQuestionsSaved(questionsToSave, extractedPaper.paperTitle || preload.doc.name);
+        return;
+      }
       if (onQuestionsBatchAdded) {
         onQuestionsBatchAdded(questionsToSave);
       } else {
@@ -865,6 +875,19 @@ export const QuestionUploader: React.FC<QuestionUploaderProps> = ({
     <div className="space-y-6">
       {/* Data files that student programs can open (past-paper .txt / .csv files) */}
       <DataFilesManager />
+
+      {preload && (
+        <div className="p-4 rounded-2xl bg-sky-50 border border-sky-200 text-sm text-sky-900 space-y-1" data-testid="uploader-preload-banner">
+          <div className="font-bold">📁 From My Resources: {preload.doc.name}</div>
+          <div>
+            The file is already loaded as the question paper below. Add the mark scheme if you have one, then press the convert button.
+            {preload.intent === "assessment"
+              ? " After you check and save the questions, a new assessment opens with them already selected."
+              : " After you check the questions, save them to the question bank."}
+            {preload.doc.mimeType === "text/plain" && " (Word files are converted from their text - pictures and diagrams in the Word file are not included.)"}
+          </div>
+        </div>
+      )}
 
       {/* Mode Selector & Header */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-5">
@@ -1068,7 +1091,7 @@ export const QuestionUploader: React.FC<QuestionUploaderProps> = ({
                           {questionDoc.name}
                         </div>
                         <div className="text-[10px] text-purple-700 font-medium">
-                          {questionDoc.isPdf ? "PDF Document" : "Image"} • {questionDoc.size}
+                          {questionDoc.mimeType === "text/plain" ? "Text of a Word document" : questionDoc.isPdf ? "PDF Document" : "Image"} • {questionDoc.size}
                         </div>
                       </div>
                     </div>
@@ -1781,7 +1804,7 @@ export const QuestionUploader: React.FC<QuestionUploaderProps> = ({
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs shadow-sm transition-colors disabled:opacity-50 cursor-pointer"
               >
                 <Save className="w-3.5 h-3.5" />
-                Save Selected ({approvedQuestionIds.size}) to Bank
+                Save Selected ({approvedQuestionIds.size}) to Bank{preload?.intent === "assessment" ? " & make assessment" : ""}
               </button>
               <button
                 type="button"
@@ -1790,7 +1813,7 @@ export const QuestionUploader: React.FC<QuestionUploaderProps> = ({
                 className="inline-flex items-center gap-1.5 px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-sm transition-colors disabled:opacity-50 cursor-pointer"
               >
                 <Check className="w-3.5 h-3.5" />
-                Approve & Save All ({extractedPaper.questions.length}) to Bank
+                Approve & Save All ({extractedPaper.questions.length}) to Bank{preload?.intent === "assessment" ? " & make assessment" : ""}
               </button>
             </div>
           </div>

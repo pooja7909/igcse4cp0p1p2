@@ -1,5 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { GraduationCap, Lock, CalendarClock, CheckCircle2, ChevronRight, Clock } from "lucide-react";
+import { GraduationCap, Lock, CalendarClock, CheckCircle2, ChevronRight, Clock, FolderOpen, Download } from "lucide-react";
+import type { TeacherResource } from "../Resources/resourceTypes";
+import { ResourceTypeIcon, TopicBadges, typeLabel, viewMode, formatSize, needsPieces, downloadResource } from "../Resources/resourceTypes";
+import { ResourceViewer } from "../Resources/ResourceViewer";
 import { LEARN_LESSON_MAP } from "../../data/learnLessons";
 import type { LearnStudent, LessonProgress, LearnLesson } from "./learnTypes";
 import { STAMP_INFO } from "./learnTypes";
@@ -47,6 +50,9 @@ export const LearnStudentApp: React.FC<{ code: string }> = ({ code }) => {
   const [openLesson, setOpenLesson] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [resources, setResources] = useState<TeacherResource[]>([]);
+  const [openRes, setOpenRes] = useState<TeacherResource | null>(null);
+  const [dl, setDl] = useState<{ id: string; pct: number; error?: string } | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -77,6 +83,34 @@ export const LearnStudentApp: React.FC<{ code: string }> = ({ code }) => {
   useEffect(() => {
     load();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Resources (web pages, worksheets, links) the teacher shared with this class
+  const joined = Boolean(student);
+  useEffect(() => {
+    if (!joined) return;
+    let gone = false;
+    fetch(`/api/learn/c/${encodeURIComponent(code)}/resources`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!gone && d && Array.isArray(d.resources)) setResources(d.resources);
+      })
+      .catch(() => {});
+    return () => {
+      gone = true;
+    };
+  }, [joined, code]);
+  const resourceAccess = `class=${encodeURIComponent(code)}`;
+  const downloadBig = async (r: TeacherResource) => {
+    if (dl && !dl.error) return;
+    setDl({ id: r.id, pct: 0 });
+    try {
+      await downloadResource(r, resourceAccess, (f) => setDl({ id: r.id, pct: Math.round(f * 100) }));
+      setDl(null);
+    } catch (e: any) {
+      setDl({ id: r.id, pct: 0, error: e?.message || "Could not download the file." });
+    }
+  };
+  const resourceSrc = (r: TeacherResource) => (r.kind === "link" ? r.url || "" : `/api/resources/${encodeURIComponent(r.id)}/view?class=${encodeURIComponent(code)}`);
 
   const join = async () => {
     setJoining(true);
@@ -276,6 +310,52 @@ export const LearnStudentApp: React.FC<{ code: string }> = ({ code }) => {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">{done.map(card)}</div>
         </section>
       )}
+
+      {resources.length > 0 && (
+        <section className="space-y-2" data-testid="student-resources">
+          <h2 className="font-bold text-slate-800 inline-flex items-center gap-1"><FolderOpen className="w-4 h-4 text-sky-600" /> Resources from your teacher</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {resources.map((r) => {
+              const mode = viewMode(r);
+              const inner = (
+                <>
+                  <div className="flex items-center gap-2">
+                    <div className="w-9 h-9 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-center shrink-0">
+                      <ResourceTypeIcon r={r} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-bold text-slate-900 truncate">{r.title}</div>
+                      <div className="text-[11px] text-slate-500">
+                        {typeLabel(r)}
+                        {mode === "download" && r.size ? ` - ${formatSize(r.size)} - download` : ""}
+                        {dl?.id === r.id && (dl.error ? <span className="block text-rose-700">{dl.error}</span> : <span className="block font-semibold text-purple-700">Downloading... {dl.pct}%</span>)}
+                      </div>
+                    </div>
+                    {mode === "download" ? <Download className="w-4 h-4 text-slate-400 ml-auto shrink-0" /> : <ChevronRight className="w-4 h-4 text-slate-400 ml-auto shrink-0" />}
+                  </div>
+                  {r.description && <div className="text-xs text-slate-600 line-clamp-3">{r.description}</div>}
+                  <TopicBadges topics={r.topics} paper={r.paper} />
+                </>
+              );
+              const cls = "text-left p-4 rounded-2xl border-2 border-slate-200 bg-white hover:border-sky-400 hover:shadow-md transition-all space-y-2 block";
+              return mode === "download" && needsPieces(r) ? (
+                <button key={r.id} type="button" onClick={() => downloadBig(r)} className={cls} data-testid={`student-resource-${r.id}`}>
+                  {inner}
+                </button>
+              ) : mode === "download" ? (
+                <a key={r.id} href={resourceSrc(r)} download={r.fileName || true} className={cls} data-testid={`student-resource-${r.id}`}>
+                  {inner}
+                </a>
+              ) : (
+                <button key={r.id} type="button" onClick={() => setOpenRes(r)} className={cls} data-testid={`student-resource-${r.id}`}>
+                  {inner}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
+      {openRes && <ResourceViewer resource={openRes} src={resourceSrc(openRes)} access={resourceAccess} onClose={() => setOpenRes(null)} />}
 
       <section className="p-4 rounded-2xl bg-white border border-slate-200 space-y-2">
         <div className="flex items-center justify-between">

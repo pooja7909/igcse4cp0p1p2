@@ -540,3 +540,65 @@ export async function deleteUpload(uploadId: string, total: number): Promise<voi
     console.warn("[store] Could not clean up upload", uploadId, e);
   }
 }
+
+// ---------- Large files kept in the database (teacher resources) ----------
+// A file is stored as base64 text split into "<collection>_parts" documents (same layout as
+// big records above), but written part by part so a 15 MB file never has to go through one
+// Firestore commit (each commit is limited to ~10 MB). Parts are PART_SIZE characters, a
+// multiple of 4, so every part is valid base64 on its own and can be decoded and streamed
+// separately.
+export async function writeBlob(collection: string, id: string, base64: string): Promise<void> {
+  const a = await adapter();
+  const old = await a.getRaw(collection, id).catch(() => null);
+  const updatedAt = Date.now();
+  const partKey = `${id}__${updatedAt}`;
+  const chunks = chunkString(base64, PART_SIZE);
+  for (let i = 0; i < chunks.length; i += 4) {
+    await Promise.all(
+      chunks.slice(i, i + 4).map((c, j) => a.setRaw(collection + "_parts", `${partKey}__${i + j}`, { data: c }))
+    );
+  }
+  await a.setRaw(collection, id, { parts: chunks.length, partKey, updatedAt, length: base64.length });
+  if (old && old.parts && old.partKey && old.partKey !== partKey) {
+    await removeBlobParts(a, collection, old.partKey, old.parts);
+  }
+}
+
+/** Characters of base64 per stored part (each part holds BLOB_PART_BYTES bytes, except the last). */
+export const BLOB_PART_CHARS = PART_SIZE;
+export const BLOB_PART_BYTES = (PART_SIZE / 4) * 3;
+
+/**
+ * The stored base64 parts of a file (each part decodes on its own), or null if missing.
+ * `range` reads only stored parts [from, to) - used to serve a big file piece by piece.
+ */
+export async function readBlobParts(collection: string, id: string, range?: { from: number; to: number }): Promise<string[] | null> {
+  const a = await adapter();
+  const main = await a.getRaw(collection, id);
+  if (!main || main.deleted) return null;
+  if (typeof main.json === "string") return [main.json];
+  if (!main.parts) return null;
+  const from = range ? Math.max(0, range.from) : 0;
+  const to = range ? Math.min(main.parts, range.to) : main.parts;
+  if (from >= to) return null;
+  const pieces = await Promise.all(
+    Array.from({ length: to - from }, (_, i) => a.getRaw(collection + "_parts", `${main.partKey}__${from + i}`))
+  );
+  if (pieces.some((p) => !p || typeof p.data !== "string")) return null;
+  return pieces.map((p) => p.data as string);
+}
+
+export async function deleteBlob(collection: string, id: string): Promise<void> {
+  const a = await adapter();
+  const main = await a.getRaw(collection, id).catch(() => null);
+  if (main && main.parts && main.partKey) await removeBlobParts(a, collection, main.partKey, main.parts);
+  await a.deleteRaw(collection, id);
+}
+
+async function removeBlobParts(a: Adapter, collection: string, partKey: string, parts: number) {
+  try {
+    await Promise.all(Array.from({ length: parts }, (_, i) => a.deleteRaw(collection + "_parts", `${partKey}__${i}`)));
+  } catch (e) {
+    console.warn("[store] Could not remove old file parts", collection, partKey, e);
+  }
+}

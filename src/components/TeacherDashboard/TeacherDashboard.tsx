@@ -13,6 +13,8 @@ import { TeachersPanel } from "./TeachersPanel";
 import { CombinedResultsView } from "./CombinedResultsView";
 import { getTaskPaper } from "../../utils/pastPaperUtils";
 const LearnTeacherPanel = React.lazy(() => import("../Learn/LearnTeacherPanel").then((m) => ({ default: m.LearnTeacherPanel })));
+const ResourcesTeacherPanel = React.lazy(() => import("../Resources/ResourcesTeacherPanel"));
+import type { ConvertibleDoc, ConvertIntent } from "../Resources/ResourcesTeacherPanel";
 import {
   syncAssessmentToFirestore,
   fetchAllAssessmentsFromFirestore,
@@ -67,7 +69,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   practiceOpen,
   onTogglePracticeOpen,
 }) => {
-  const [activeTab, setActiveTab] = useState<"live" | "trends" | "bank" | "add_question" | "builder" | "upload" | "list" | "learn" | "combined">("live");
+  const [activeTab, setActiveTab] = useState<"live" | "trends" | "bank" | "add_question" | "builder" | "upload" | "list" | "learn" | "combined" | "resources">("live");
+  // A file from "My Resources" handed to the existing Upload / JSON converter
+  const [uploaderPreload, setUploaderPreload] = useState<{ doc: ConvertibleDoc; intent: ConvertIntent; nonce: number } | null>(null);
+  // Questions converted from a resource, preselected in a new assessment (only for that builder instance)
+  const [builderPreset, setBuilderPreset] = useState<{ nonce: number; taskIds: string[]; title: string } | null>(null);
   const [builderInitialMode, setBuilderInitialMode] = useState<"task" | "assessment">("assessment");
   // Changes every time "Set Practice Task" / "Set In-Class Assessment" is clicked: fresh empty form
   const [builderNonce, setBuilderNonce] = useState(0);
@@ -500,6 +506,18 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           >
             <span>🎓 Learning Hub</span>
           </button>
+          <button
+            data-testid="teacher-tab-resources"
+            onClick={() => setActiveTab("resources")}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
+              activeTab === "resources"
+                ? "bg-purple-600 text-white shadow-sm shadow-purple-600/20"
+                : "text-indigo-700 hover:text-indigo-950 hover:bg-indigo-50"
+            }`}
+            title="Your own web pages, worksheets, sample papers and links - choose what students see"
+          >
+            <span>📁 My Resources</span>
+          </button>
         </div>
 
         {/* Right side controls: Assessment Switcher & Lock Console */}
@@ -745,6 +763,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           units={units}
           allTasks={allTasks}
           initialMode={builderInitialMode}
+          initialSelectedTaskIds={builderPreset && builderPreset.nonce === builderNonce && !editingAssessmentId ? builderPreset.taskIds : undefined}
+          initialTitle={builderPreset && builderPreset.nonce === builderNonce && !editingAssessmentId ? builderPreset.title : undefined}
           onAssessmentCreated={(created) => {
             setEditingAssessmentId(null);
             handleAssessmentCreated(created);
@@ -778,12 +798,26 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       {/* Tab 5: PDF / JSON Question Uploader */}
       {activeTab === "upload" && (
         <QuestionUploader
+          key={uploaderPreload ? `preload-${uploaderPreload.nonce}` : "upload"}
           units={units}
+          preload={uploaderPreload}
+          onAssessmentQuestionsSaved={(tasks, paperTitle) => {
+            if (onQuestionsBatchAdded) onQuestionsBatchAdded(tasks);
+            else tasks.forEach((t) => onQuestionAdded(t));
+            setUploaderPreload(null);
+            const nonce = builderNonce + 1;
+            setEditingAssessmentId(null);
+            setBuilderInitialMode("assessment");
+            setBuilderPreset({ nonce, taskIds: tasks.map((t) => t.id), title: paperTitle });
+            setBuilderNonce(nonce);
+            setActiveTab("builder");
+          }}
           onQuestionAdded={(task) => {
             onQuestionAdded(task);
             setActiveTab("bank");
           }}
           onQuestionsBatchAdded={(tasks) => {
+            setUploaderPreload(null);
             if (onQuestionsBatchAdded) {
               onQuestionsBatchAdded(tasks);
             } else {
@@ -800,6 +834,17 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       {activeTab === "learn" && (
         <React.Suspense fallback={<div className="p-8 text-center text-slate-500">Loading the Learning Hub...</div>}>
           <LearnTeacherPanel />
+        </React.Suspense>
+      )}
+
+      {activeTab === "resources" && (
+        <React.Suspense fallback={<div className="p-8 text-center text-slate-500">Loading your resources...</div>}>
+          <ResourcesTeacherPanel
+            onConvert={(doc, intent) => {
+              setUploaderPreload({ doc, intent, nonce: Date.now() });
+              setActiveTab("upload");
+            }}
+          />
         </React.Suspense>
       )}
 

@@ -67,6 +67,9 @@ interface AssessmentBuilderProps {
   initialMode?: "assessment" | "task";
   /** Every assessment and task (all teachers), used to colour questions that are already set */
   usageAssessments?: Assessment[];
+  /** New assessment only: questions to start with (e.g. a paper just converted from My Resources) */
+  initialSelectedTaskIds?: string[];
+  initialTitle?: string;
 }
 
 export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
@@ -82,6 +85,8 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
   onQuestionUpdated,
   initialMode,
   usageAssessments,
+  initialSelectedTaskIds,
+  initialTitle,
 }) => {
   const isEditMode = !!editingAssessment;
 
@@ -91,7 +96,7 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
   });
   const [title, setTitle] = useState(() => {
     if (editingAssessment?.title) return editingAssessment.title;
-    return "";
+    return editingAssessment ? "" : initialTitle || "";
   });
   const [durationMinutes, setDurationMinutes] = useState(() => {
     if (typeof editingAssessment?.durationMinutes === "number") return editingAssessment.durationMinutes;
@@ -99,7 +104,9 @@ export const AssessmentBuilder: React.FC<AssessmentBuilderProps> = ({
   });
   const [showScoreImmediately, setShowScoreImmediately] = useState(true);
   // A new assessment starts empty: no sample questions
-  const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>(() =>
+    editingAssessment ? [] : [...(initialSelectedTaskIds || [])]
+  );
   const [editingQuestionTask, setEditingQuestionTask] = useState<IGCSETask | null>(null);
   const [unitFilter, setUnitFilter] = useState<string>("all");
   const [difficultyFilter, setDifficultyFilter] = useState<string>("all");

@@ -24,7 +24,7 @@ export function loadLearnData(dataDir: string) {
   }
 }
 
-function saveLearnData() {
+export function saveLearnData() {
   if (!dataFile) return;
   try {
     fs.mkdirSync(path.dirname(dataFile), { recursive: true });
@@ -63,6 +63,8 @@ function publicClass(c: any) {
     open: c.open !== false,
     allowQuizRetakes: c.allowQuizRetakes !== false,
     assignments: c.assignments || {},
+    // Teacher resources shared with this class, in the order students see them (resourcesServer.ts)
+    resourceIds: Array.isArray(c.resourceIds) ? c.resourceIds : [],
     ownerName: c.ownerName,
   };
 }
@@ -191,7 +193,18 @@ export function registerLearnRoutes(
       return;
     }
     const b = req.body || {};
-    if (b.name !== undefined && cleanName(b.name)) c.name = cleanName(b.name);
+    if (b.name !== undefined) {
+      const name = cleanName(b.name);
+      if (!name) {
+        res.status(400).json({ error: "Please give the class a name." });
+        return;
+      }
+      if (String(b.name).trim().length > 60) {
+        res.status(400).json({ error: "Class names can be at most 60 characters." });
+        return;
+      }
+      c.name = name;
+    }
     if (b.open !== undefined) c.open = Boolean(b.open);
     if (b.allowQuizRetakes !== undefined) c.allowQuizRetakes = Boolean(b.allowQuizRetakes);
     if (b.assignments && typeof b.assignments === "object") {
